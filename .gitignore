@@ -1,0 +1,20 @@
+# Credentials and sensitive data
+.credentials.json
+
+# Temporary and cache files
+cache/
+downloads/
+shell-snapshots/
+debug/
+
+# Session and history data
+history.jsonl
+chrome/
+
+# Analytics and telemetry
+statsig/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+desktop.ini
