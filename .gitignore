@@ -6,12 +6,19 @@ cache/
 downloads/
 shell-snapshots/
 debug/
+paste-cache/
+classifier-log.json
+classifier-log.jsonl
+statusline-debug.json
 
 # Session and history data
 history.jsonl
 chrome/
 file-history/
 todos/
+session-env/
+sessions/
+tasks/
 
 # Project-specific settings
 projects/
@@ -26,8 +33,13 @@ statsig/
 plugins/known_marketplaces.json
 plugins/installed_plugins.json
 plugins/install-counts-cache.json
+plugins/marketplaces/
 
 # OS-specific files
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# IDE files
+.idea/
+ide/
