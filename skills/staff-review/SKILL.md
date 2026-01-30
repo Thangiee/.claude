@@ -99,6 +99,25 @@ Ask these questions:
 - **Significant:** Tech debt, scalability concern, maintainability issue, missing error handling
 - **Minor:** Naming, documentation gaps, minor pattern inconsistency
 
+#### Explanation Depth (Contextual)
+
+Match explanation depth to severity:
+
+**Blocking issues:**
+- Full context: what, why, consequences, principle violated
+- Code example showing the fix
+- Reference to docs/patterns if relevant
+- Teach the underlying concept
+
+**Significant issues:**
+- Clear explanation of problem and impact
+- Code example showing better approach
+- Brief mention of principle
+
+**Minor issues:**
+- One-liner: issue + why it matters
+- No code example needed
+
 #### What to IGNORE
 
 Do NOT flag:
