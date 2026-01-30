@@ -22,6 +22,11 @@ settings.local.json
 # Analytics and telemetry
 statsig/
 
+# Plugin state (machine-specific paths)
+plugins/known_marketplaces.json
+plugins/installed_plugins.json
+plugins/install-counts-cache.json
+
 # OS-specific files
 .DS_Store
 Thumbs.db
