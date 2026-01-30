@@ -55,3 +55,45 @@ When committing changes:
 - Changes to `settings.json` take effect immediately (no restart required since v1.0.90)
 - Authentication tokens are stored in macOS Keychain (since v0.2.30)
 - Remote repository: https://github.com/Thangiee/.claude
+
+## Cost-Optimized Subagent Routing
+
+IMPORTANT: To optimize API costs, automatically delegate subtasks to cheaper models using the Task tool's `model` parameter. Follow these routing rules:
+
+**Use `model: "haiku"` for:**
+- Simple questions and explanations
+- Formatting code
+- Renaming variables/functions
+- Writing comments or docstrings
+- Simple file searches (Glob, Grep)
+- Syntax fixes
+- Generating boilerplate
+
+**Use `model: "sonnet"` for:**
+- Code review
+- Moderate refactoring
+- Implementing standard patterns
+- Writing tests for existing code
+- Debugging straightforward issues
+- Multi-file searches and analysis
+- Documentation generation
+
+**Keep in main session (no subagent) for:**
+- Architecture decisions requiring full conversation context
+- Complex debugging needing back-and-forth
+- Tasks that build on recent conversation
+- Security analysis
+- Performance optimization with iterative testing
+
+**Context preservation - do NOT route to cheaper model when:**
+- Task depends on previous conversation context
+- Working on same files discussed earlier in session
+- Follow-up question to previous complex task
+- Task references "this", "that", or "the" without specifics (needs context)
+- Iterative debugging or refinement
+
+**Example usage:**
+```
+Task(prompt="Search for all API endpoints", model="haiku", ...)
+Task(prompt="Review this function for bugs", model="sonnet", ...)
+```
