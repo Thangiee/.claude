@@ -106,3 +106,76 @@ Do NOT flag:
 - Line-by-line nitpicks
 - Style preferences
 - Things that are clearly intentional trade-offs
+
+### Phase 4: Output
+
+Generate findings and write to markdown file.
+
+**Output path:** `docs/reviews/YYYY-MM-DD-<branch-or-pr>.md`
+
+**Output format:**
+
+````markdown
+# Staff Review: <branch-name or PR title>
+
+**Date:** YYYY-MM-DD
+**Reviewer:** Claude (Staff Review Skill)
+**Scope:** X files, Y lines changed
+
+## Summary
+
+[2-3 sentence executive summary. What's this change doing? What's the overall assessment?]
+
+**Verdict:** Ship it | Needs work | Rethink approach
+
+## Findings
+
+### Blocking
+> These must be addressed before merging.
+
+#### 1. [Issue title]
+**Category:** Architecture | Cross-cutting | Trade-off
+
+[Detailed explanation of why this matters, the principle being violated, and potential consequences if ignored.]
+
+**Better approach:**
+```[language]
+// Code example demonstrating the recommended pattern
+```
+
+---
+
+### Significant
+> Strong recommendations that improve quality/maintainability.
+
+#### 2. [Issue title]
+**Category:** ...
+
+[Moderate explanation - why it matters and what to do.]
+
+**Better approach:**
+```[language]
+// Code example
+```
+
+---
+
+### Minor
+> Polish items. Address if time permits.
+
+- [Brief issue]: [One-liner explanation]
+- [Brief issue]: [One-liner explanation]
+
+## What I'd Do Differently
+
+[Optional section for major concerns - if you were building this from scratch, what approach would you take?]
+
+## Context Gathered
+
+<details>
+<summary>System understanding (click to expand)</summary>
+
+[Summary from Phase 1 exploration]
+
+</details>
+````
