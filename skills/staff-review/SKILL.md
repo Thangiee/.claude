@@ -198,3 +198,83 @@ Generate findings and write to markdown file.
 
 </details>
 ````
+
+## Example
+
+**User runs:** `/staff-review`
+
+**Phase 1 - Context:**
+```
+[Spawn Explore subagent]
+→ Returns: "This is a Next.js app with App Router. Uses Prisma for DB,
+   Clerk for auth. Key patterns: server components by default,
+   API routes in /api, shared utils in /lib..."
+```
+
+**Phase 2 - Diff:**
+```bash
+git diff HEAD
+→ 3 files changed: src/app/api/users/route.ts, src/lib/db.ts, prisma/schema.prisma
+```
+
+**Phase 3 - Review:**
+Applying Architect/Systems/Strategist thinking...
+
+**Phase 4 - Output:**
+Written to `docs/reviews/2026-01-30-feature-user-api.md`:
+
+````markdown
+# Staff Review: feature/user-api
+
+**Date:** 2026-01-30
+**Scope:** 3 files, 89 lines
+
+## Summary
+
+Adds a new user API endpoint with database schema changes. The implementation
+works but introduces a problematic pattern that will cause issues at scale.
+
+**Verdict:** Needs work
+
+## Findings
+
+### Blocking
+
+#### 1. N+1 query in user list endpoint
+**Category:** Architecture
+
+The `/api/users` endpoint fetches users then loops to get their roles.
+This creates N+1 queries that will crush the database with 1000+ users.
+
+**Better approach:**
+```typescript
+// Use Prisma include to eager-load roles
+const users = await prisma.user.findMany({
+  include: { roles: true }
+})
+```
+
+### Significant
+
+#### 2. Missing rate limiting on public endpoint
+**Category:** Cross-cutting
+
+This endpoint is unauthenticated and has no rate limiting.
+Bots could scrape your entire user list.
+
+**Better approach:**
+```typescript
+// Add rate limiting middleware
+import { rateLimit } from '@/lib/rate-limit'
+
+export const GET = rateLimit(async (req) => { ... }, {
+  limit: 100,
+  window: '1m'
+})
+```
+
+### Minor
+
+- **Missing pagination:** Will need it eventually, low cost to add now
+- **Inconsistent error format:** Other endpoints return `{ error: string }`, this returns `{ message: string }`
+````
