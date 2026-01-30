@@ -1,17 +1,19 @@
 {
-  "model": "opus",
+  "env": {
+    "ENABLE_TOOL_SEARCH": "auto:0"
+  },
   "permissions": {
     "allow": [
       "Bash(path:/tmp:*)"
     ]
   },
+  "model": "sonnet",
   "hooks": {},
   "statusLine": {
     "type": "command",
     "command": "bash ~/.claude/statusline-command.sh"
   },
   "enabledPlugins": {
-    "superpowers@claude-plugins-official": true,
     "everything-claude-code@everything-claude-code": true
   },
   "autoUpdatesChannel": "latest"
