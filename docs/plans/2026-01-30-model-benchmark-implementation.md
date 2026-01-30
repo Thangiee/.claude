@@ -1,1295 +1,388 @@
-# Model Benchmark Tool - Implementation Plan
+# Model Benchmark Tool - Implementation Plan (Python)
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Build a CLI tool that benchmarks Claude models (Haiku, Sonnet, Opus) on Scala coding tasks and generates cost vs quality reports.
+**Goal:** Build a Python CLI that benchmarks Claude models on Scala/Kotlin code tasks and skill behavior tests.
 
-**Architecture:** Scala CLI app using sbt, circe for JSON, snakeyaml for YAML, sttp for HTTP. Each task runs through all models, gets compiled/tested/linted, and scored. Results aggregated into markdown report.
+**Architecture:** Python CLI using typer, httpx for API calls, pyyaml for task loading. Shells out to scalac/kotlinc for code evaluation. Uses regex + optional Haiku calls for skill behavior checks.
 
-**Tech Stack:** Scala 3, sbt, circe, snakeyaml, sttp, scalafix, scalafmt, munit
-
-**Phase 1 Scope:** Scala evaluation only. Kotlin support added in Phase 2.
+**Tech Stack:** Python 3.11+, typer, httpx, pyyaml, pytest
 
 ---
 
 ## Task 1: Project Setup
 
 **Files:**
-- Create: `model-benchmark/build.sbt`
-- Create: `model-benchmark/project/build.properties`
-- Create: `model-benchmark/project/plugins.sbt`
-- Create: `model-benchmark/.scalafmt.conf`
-- Create: `model-benchmark/.scalafix.conf`
+- Create: `model-benchmark/pyproject.toml`
+- Create: `model-benchmark/benchmark/__init__.py`
+- Create: `model-benchmark/benchmark/cli.py`
 
 **Step 1: Create project directory**
 
 ```bash
-mkdir -p ~/projects/model-benchmark/project
+mkdir -p ~/projects/model-benchmark/benchmark
 cd ~/projects/model-benchmark
 ```
 
-**Step 2: Create build.sbt**
+**Step 2: Create pyproject.toml**
 
-```scala
-val scala3Version = "3.3.1"
-
-lazy val root = project
-  .in(file("."))
-  .settings(
-    name := "model-benchmark",
-    version := "0.1.0",
-    scalaVersion := scala3Version,
-    libraryDependencies ++= Seq(
-      // CLI
-      "com.monovore" %% "decline" % "2.4.1",
-      // JSON
-      "io.circe" %% "circe-core" % "0.14.6",
-      "io.circe" %% "circe-generic" % "0.14.6",
-      "io.circe" %% "circe-parser" % "0.14.6",
-      // YAML
-      "org.yaml" % "snakeyaml" % "2.2",
-      // HTTP
-      "com.softwaremill.sttp.client3" %% "core" % "3.9.1",
-      "com.softwaremill.sttp.client3" %% "circe" % "3.9.1",
-      // Testing
-      "org.scalameta" %% "munit" % "0.7.29" % Test
-    ),
-    // For running scalafmt/scalafix on benchmark outputs
-    fork := true
-  )
-```
-
-**Step 3: Create project/build.properties**
-
-```
-sbt.version=1.9.7
-```
-
-**Step 4: Create project/plugins.sbt**
-
-```scala
-addSbtPlugin("org.scalameta" % "sbt-scalafmt" % "2.5.2")
-addSbtPlugin("ch.epfl.scala" % "sbt-scalafix" % "0.11.1")
-```
-
-**Step 5: Create .scalafmt.conf**
-
-```hocon
-version = 3.7.17
-runner.dialect = scala3
-maxColumn = 100
-```
-
-**Step 6: Create .scalafix.conf**
-
-```hocon
-rules = [
-  OrganizeImports,
-  RemoveUnused
+```toml
+[project]
+name = "model-benchmark"
+version = "0.1.0"
+description = "Benchmark Claude models on coding tasks"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.9.0",
+    "httpx>=0.25.0",
+    "pyyaml>=6.0",
+    "rich>=13.0",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-asyncio>=0.21"]
+
+[project.scripts]
+model-benchmark = "benchmark.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 ```
 
-**Step 7: Verify project compiles**
+**Step 3: Create benchmark/__init__.py**
 
-```bash
-cd ~/projects/model-benchmark
-sbt compile
+```python
+"""Model benchmark tool for comparing Claude models."""
 ```
 
-Expected: `[success]`
+**Step 4: Create minimal CLI**
 
-**Step 8: Commit**
+```python
+# benchmark/cli.py
+import typer
 
-```bash
-git init
-git add .
-git commit -m "chore: initialize sbt project with dependencies"
-```
+app = typer.Typer(help="Benchmark Claude models on coding tasks")
 
----
-
-## Task 2: Core Domain Models
-
-**Files:**
-- Create: `model-benchmark/src/main/scala/benchmark/domain/Task.scala`
-- Create: `model-benchmark/src/main/scala/benchmark/domain/EvalResult.scala`
-- Create: `model-benchmark/src/main/scala/benchmark/domain/Model.scala`
-- Create: `model-benchmark/src/test/scala/benchmark/domain/EvalResultTest.scala`
-
-**Step 1: Write failing test for score calculation**
-
-```scala
-// src/test/scala/benchmark/domain/EvalResultTest.scala
-package benchmark.domain
-
-import munit.FunSuite
-
-class EvalResultTest extends FunSuite {
-
-  test("score is 0 when compilation fails") {
-    val result = EvalResult(
-      taskName = "test-task",
-      model = Model.Haiku,
-      compiles = false,
-      testsPass = false,
-      qualityScores = Map.empty,
-      rawOutput = "",
-      extractedCode = None,
-      cost = 0.001
-    )
-    assertEquals(result.score, 0)
-  }
-
-  test("score is 40 when tests fail") {
-    val result = EvalResult(
-      taskName = "test-task",
-      model = Model.Haiku,
-      compiles = true,
-      testsPass = false,
-      qualityScores = Map("scalafmt" -> 80),
-      rawOutput = "",
-      extractedCode = Some("code"),
-      cost = 0.001
-    )
-    assertEquals(result.score, 40)
-  }
-
-  test("score is 40 + 60% of quality avg when tests pass") {
-    val result = EvalResult(
-      taskName = "test-task",
-      model = Model.Haiku,
-      compiles = true,
-      testsPass = true,
-      qualityScores = Map("scalafmt" -> 100, "scalafix" -> 80),
-      rawOutput = "",
-      extractedCode = Some("code"),
-      cost = 0.001
-    )
-    // avg = 90, 60% of 90 = 54, 40 + 54 = 94
-    assertEquals(result.score, 94)
-  }
-}
-```
-
-**Step 2: Run test to verify it fails**
-
-```bash
-sbt test
-```
-
-Expected: Compilation error - classes don't exist
-
-**Step 3: Create Model enum**
-
-```scala
-// src/main/scala/benchmark/domain/Model.scala
-package benchmark.domain
-
-enum Model(val id: String, val costPer1kInput: Double, val costPer1kOutput: Double):
-  case Haiku extends Model("claude-3-5-haiku-20241022", 0.001, 0.005)
-  case Sonnet extends Model("claude-sonnet-4-20250514", 0.003, 0.015)
-  case Opus extends Model("claude-opus-4-20250514", 0.015, 0.075)
-```
-
-**Step 4: Create Task case class**
-
-```scala
-// src/main/scala/benchmark/domain/Task.scala
-package benchmark.domain
-
-case class Task(
-    name: String,
-    language: String,
-    complexity: String,
-    description: String,
-    prompt: String,
-    scaffold: String,
-    tests: String,
-    thresholds: Map[String, String]
-)
-```
-
-**Step 5: Create EvalResult with score calculation**
-
-```scala
-// src/main/scala/benchmark/domain/EvalResult.scala
-package benchmark.domain
-
-case class EvalResult(
-    taskName: String,
-    model: Model,
-    compiles: Boolean,
-    testsPass: Boolean,
-    qualityScores: Map[String, Int],
-    rawOutput: String,
-    extractedCode: Option[String],
-    cost: Double
+@app.command()
+def run(
+    suite: str = typer.Option(None, help="Task suite to run"),
+    task: str = typer.Option(None, help="Single task to run"),
+    models: str = typer.Option("haiku,sonnet,opus", help="Models to test"),
 ):
-  def score: Int =
-    if !compiles then 0
-    else if !testsPass then 40
-    else
-      val qualityAvg =
-        if qualityScores.isEmpty then 0
-        else qualityScores.values.sum / qualityScores.size
-      40 + (qualityAvg * 0.6).toInt
+    """Run benchmark tasks."""
+    typer.echo(f"Running suite={suite} task={task} models={models}")
+
+@app.command()
+def list():
+    """List available tasks."""
+    typer.echo("Listing tasks...")
+
+@app.command()
+def review():
+    """Review close calls from last run."""
+    typer.echo("Review mode...")
+
+if __name__ == "__main__":
+    app()
 ```
 
-**Step 6: Run tests to verify they pass**
+**Step 5: Install and verify**
 
 ```bash
-sbt test
+pip install -e ".[dev]"
+model-benchmark --help
 ```
 
-Expected: All 3 tests pass
-
-**Step 7: Commit**
-
-```bash
-git add .
-git commit -m "feat: add core domain models with score calculation"
-```
-
----
-
-## Task 3: YAML Task Loader
-
-**Files:**
-- Create: `model-benchmark/src/main/scala/benchmark/tasks/TaskLoader.scala`
-- Create: `model-benchmark/src/test/scala/benchmark/tasks/TaskLoaderTest.scala`
-- Create: `model-benchmark/tasks/scala/simple/sum-list.yaml`
-
-**Step 1: Write failing test for task loading**
-
-```scala
-// src/test/scala/benchmark/tasks/TaskLoaderTest.scala
-package benchmark.tasks
-
-import benchmark.domain.Task
-import munit.FunSuite
-import java.nio.file.{Files, Path}
-
-class TaskLoaderTest extends FunSuite {
-
-  val testYaml = """
-    |name: test-task
-    |language: scala
-    |complexity: simple
-    |description: "Test task"
-    |prompt: |
-    |  Write a function
-    |scaffold: |
-    |  // scaffold
-    |tests: |
-    |  assert(true)
-    |thresholds:
-    |  compiles: required
-    |""".stripMargin
-
-  test("loads task from YAML string") {
-    val task = TaskLoader.fromYaml(testYaml)
-    assertEquals(task.name, "test-task")
-    assertEquals(task.language, "scala")
-    assertEquals(task.complexity, "simple")
-    assertEquals(task.thresholds("compiles"), "required")
-  }
-
-  test("loads task from file path") {
-    val tempFile = Files.createTempFile("task-", ".yaml")
-    Files.writeString(tempFile, testYaml)
-    try
-      val task = TaskLoader.fromFile(tempFile)
-      assertEquals(task.name, "test-task")
-    finally Files.delete(tempFile)
-  }
-
-  test("loads all tasks from directory") {
-    val tempDir = Files.createTempDirectory("tasks-")
-    val file1 = tempDir.resolve("task1.yaml")
-    val file2 = tempDir.resolve("task2.yaml")
-    Files.writeString(file1, testYaml)
-    Files.writeString(file2, testYaml.replace("test-task", "test-task-2"))
-    try
-      val tasks = TaskLoader.fromDirectory(tempDir)
-      assertEquals(tasks.size, 2)
-    finally
-      Files.delete(file1)
-      Files.delete(file2)
-      Files.delete(tempDir)
-  }
-}
-```
-
-**Step 2: Run test to verify it fails**
-
-```bash
-sbt test
-```
-
-Expected: Compilation error - TaskLoader doesn't exist
-
-**Step 3: Implement TaskLoader**
-
-```scala
-// src/main/scala/benchmark/tasks/TaskLoader.scala
-package benchmark.tasks
-
-import benchmark.domain.Task
-import org.yaml.snakeyaml.Yaml
-import java.nio.file.{Files, Path}
-import scala.jdk.CollectionConverters.*
-
-object TaskLoader:
-
-  private val yaml = new Yaml()
-
-  def fromYaml(content: String): Task =
-    val data = yaml.load[java.util.Map[String, Any]](content).asScala
-    Task(
-      name = data("name").toString,
-      language = data("language").toString,
-      complexity = data("complexity").toString,
-      description = data("description").toString,
-      prompt = data("prompt").toString,
-      scaffold = data.get("scaffold").map(_.toString).getOrElse(""),
-      tests = data.get("tests").map(_.toString).getOrElse(""),
-      thresholds = data
-        .get("thresholds")
-        .map(_.asInstanceOf[java.util.Map[String, Any]].asScala.view.mapValues(_.toString).toMap)
-        .getOrElse(Map.empty)
-    )
-
-  def fromFile(path: Path): Task =
-    fromYaml(Files.readString(path))
-
-  def fromDirectory(dir: Path): List[Task] =
-    Files
-      .list(dir)
-      .filter(p => p.toString.endsWith(".yaml") || p.toString.endsWith(".yml"))
-      .map(fromFile)
-      .toList
-      .asScala
-      .toList
-```
-
-**Step 4: Run tests to verify they pass**
-
-```bash
-sbt test
-```
-
-Expected: All tests pass
-
-**Step 5: Create sample task file**
-
-```yaml
-# tasks/scala/simple/sum-list.yaml
-name: sum-list
-language: scala
-complexity: simple
-description: "Implement a function to sum a list of integers"
-
-prompt: |
-  Write a Scala function that sums all integers in a list.
-
-  ```scala
-  def sumList(numbers: List[Int]): Int = ???
-  ```
-
-scaffold: |
-  // No scaffold needed
-
-tests: |
-  assert(sumList(List(1, 2, 3)) == 6)
-  assert(sumList(List.empty) == 0)
-  assert(sumList(List(-1, 1)) == 0)
-
-thresholds:
-  compiles: required
-  tests_pass: required
-```
+Expected: Shows CLI help with run, list, review commands
 
 **Step 6: Commit**
 
 ```bash
-mkdir -p tasks/scala/simple
+git init
 git add .
-git commit -m "feat: add YAML task loader with sample task"
+git commit -m "chore: initialize Python project with CLI skeleton"
 ```
 
 ---
 
-## Task 4: Claude API Client
+## Task 2: Domain Models
 
 **Files:**
-- Create: `model-benchmark/src/main/scala/benchmark/runner/ClaudeClient.scala`
-- Create: `model-benchmark/src/test/scala/benchmark/runner/ClaudeClientTest.scala`
-
-**Step 1: Write test for response parsing**
-
-```scala
-// src/test/scala/benchmark/runner/ClaudeClientTest.scala
-package benchmark.runner
-
-import benchmark.domain.Model
-import munit.FunSuite
-
-class ClaudeClientTest extends FunSuite {
-
-  test("parses successful API response") {
-    val json = """
-      |{
-      |  "content": [{"type": "text", "text": "Here is the code:\n```scala\ndef foo = 1\n```"}],
-      |  "usage": {"input_tokens": 100, "output_tokens": 50}
-      |}
-      |""".stripMargin
-
-    val response = ClaudeClient.parseResponse(json, Model.Haiku)
-    assertEquals(response.text, "Here is the code:\n```scala\ndef foo = 1\n```")
-    // cost = (100 * 0.001 + 50 * 0.005) / 1000
-    assert(response.cost > 0)
-  }
-
-  test("extracts code block from response") {
-    val text = """Here is the implementation:
-      |
-      |```scala
-      |def sumList(numbers: List[Int]): Int =
-      |  numbers.sum
-      |```
-      |
-      |This uses the built-in sum method.""".stripMargin
-
-    val code = ClaudeClient.extractCode(text)
-    assertEquals(code, Some("def sumList(numbers: List[Int]): Int =\n  numbers.sum"))
-  }
-
-  test("returns None when no code block found") {
-    val text = "I don't have any code for you."
-    val code = ClaudeClient.extractCode(text)
-    assertEquals(code, None)
-  }
-}
-```
-
-**Step 2: Run test to verify it fails**
-
-```bash
-sbt test
-```
-
-Expected: Compilation error
-
-**Step 3: Implement ClaudeClient**
-
-```scala
-// src/main/scala/benchmark/runner/ClaudeClient.scala
-package benchmark.runner
-
-import benchmark.domain.{Model, Task}
-import io.circe.*
-import io.circe.parser.*
-import sttp.client3.*
-
-case class ClaudeResponse(text: String, cost: Double)
-
-object ClaudeClient:
-
-  private val codeBlockPattern = "```(?:scala)?\\s*\\n([\\s\\S]*?)\\n```".r
-
-  def parseResponse(json: String, model: Model): ClaudeResponse =
-    val doc = parse(json).getOrElse(Json.Null)
-    val cursor = doc.hcursor
-
-    val text = cursor
-      .downField("content")
-      .downArray
-      .downField("text")
-      .as[String]
-      .getOrElse("")
-
-    val inputTokens = cursor.downField("usage").downField("input_tokens").as[Int].getOrElse(0)
-    val outputTokens = cursor.downField("usage").downField("output_tokens").as[Int].getOrElse(0)
-
-    val cost =
-      (inputTokens * model.costPer1kInput + outputTokens * model.costPer1kOutput) / 1000.0
-
-    ClaudeResponse(text, cost)
-
-  def extractCode(text: String): Option[String] =
-    codeBlockPattern.findFirstMatchIn(text).map(_.group(1).trim)
-
-  def sendRequest(task: Task, model: Model, apiKey: String): ClaudeResponse =
-    val backend = HttpURLConnectionBackend()
-
-    val requestBody = Json.obj(
-      "model" -> Json.fromString(model.id),
-      "max_tokens" -> Json.fromInt(4096),
-      "messages" -> Json.arr(
-        Json.obj(
-          "role" -> Json.fromString("user"),
-          "content" -> Json.fromString(task.prompt)
-        )
-      )
-    )
-
-    val response = basicRequest
-      .post(uri"https://api.anthropic.com/v1/messages")
-      .header("x-api-key", apiKey)
-      .header("anthropic-version", "2023-06-01")
-      .header("content-type", "application/json")
-      .body(requestBody.noSpaces)
-      .send(backend)
-
-    response.body match
-      case Right(body) => parseResponse(body, model)
-      case Left(error) => throw new RuntimeException(s"API error: $error")
-```
-
-**Step 4: Run tests to verify they pass**
-
-```bash
-sbt test
-```
-
-Expected: All tests pass
-
-**Step 5: Commit**
-
-```bash
-git add .
-git commit -m "feat: add Claude API client with response parsing"
-```
-
----
-
-## Task 5: Scala Evaluator
-
-**Files:**
-- Create: `model-benchmark/src/main/scala/benchmark/evaluator/ScalaEvaluator.scala`
-- Create: `model-benchmark/src/test/scala/benchmark/evaluator/ScalaEvaluatorTest.scala`
-
-**Step 1: Write failing test for compilation check**
-
-```scala
-// src/test/scala/benchmark/evaluator/ScalaEvaluatorTest.scala
-package benchmark.evaluator
-
-import benchmark.domain.Task
-import munit.FunSuite
-
-class ScalaEvaluatorTest extends FunSuite {
-
-  val validCode = """
-    |def sumList(numbers: List[Int]): Int = numbers.sum
-    |""".stripMargin
-
-  val invalidCode = """
-    |def sumList(numbers: List[Int]): Int = numbers.summ // typo
-    |""".stripMargin
-
-  val task = Task(
-    name = "sum-list",
-    language = "scala",
-    complexity = "simple",
-    description = "Sum a list",
-    prompt = "...",
-    scaffold = "",
-    tests = "assert(sumList(List(1,2,3)) == 6)",
-    thresholds = Map("compiles" -> "required")
-  )
-
-  test("compiles returns true for valid code") {
-    val result = ScalaEvaluator.compiles(validCode)
-    assert(result)
-  }
-
-  test("compiles returns false for invalid code") {
-    val result = ScalaEvaluator.compiles(invalidCode)
-    assert(!result)
-  }
-
-  test("runTests returns true when assertions pass") {
-    val result = ScalaEvaluator.runTests(validCode, task.tests)
-    assert(result)
-  }
-
-  test("runTests returns false when assertions fail") {
-    val wrongCode = "def sumList(numbers: List[Int]): Int = 0"
-    val result = ScalaEvaluator.runTests(wrongCode, task.tests)
-    assert(!result)
-  }
-}
-```
-
-**Step 2: Run test to verify it fails**
-
-```bash
-sbt test
-```
-
-Expected: Compilation error
-
-**Step 3: Implement ScalaEvaluator**
-
-```scala
-// src/main/scala/benchmark/evaluator/ScalaEvaluator.scala
-package benchmark.evaluator
-
-import benchmark.domain.Task
-import java.nio.file.{Files, Path}
-import scala.sys.process.*
-import scala.util.{Try, Success, Failure}
-
-object ScalaEvaluator:
-
-  def compiles(code: String): Boolean =
-    withTempFile(code) { file =>
-      val result = Process(Seq("scalac", file.toString)).!
-      result == 0
-    }
-
-  def runTests(code: String, tests: String): Boolean =
-    val fullCode = s"""
-      |$code
-      |
-      |@main def runTests(): Unit = {
-      |  $tests
-      |  println("ALL_TESTS_PASSED")
-      |}
-      |""".stripMargin
-
-    withTempDir { dir =>
-      val sourceFile = dir.resolve("Test.scala")
-      Files.writeString(sourceFile, fullCode)
-
-      val compileResult = Process(Seq("scalac", "-d", dir.toString, sourceFile.toString)).!
-      if compileResult != 0 then return false
-
-      val output = Process(Seq("scala", "-cp", dir.toString, "runTests")).!!
-      output.contains("ALL_TESTS_PASSED")
-    }
-
-  def scalafmtScore(code: String): Int =
-    withTempFile(code) { file =>
-      val checkResult = Process(Seq("scalafmt", "--check", file.toString)).!
-      if checkResult == 0 then 100 else 70 // simplified scoring
-    }
-
-  def evaluate(code: String, task: Task): Map[String, Int] =
-    Map(
-      "scalafmt" -> scalafmtScore(code)
-      // Add scalafix, wartremover in future
-    )
-
-  private def withTempFile[T](code: String)(f: Path => T): T =
-    val file = Files.createTempFile("benchmark-", ".scala")
-    try
-      Files.writeString(file, code)
-      f(file)
-    finally Files.deleteIfExists(file)
-
-  private def withTempDir[T](f: Path => T): T =
-    val dir = Files.createTempDirectory("benchmark-")
-    try f(dir)
-    finally
-      Files.walk(dir).sorted(java.util.Comparator.reverseOrder()).forEach(Files.delete)
-```
-
-**Step 4: Run tests to verify they pass**
-
-```bash
-sbt test
-```
-
-Expected: Tests pass (requires scalac in PATH)
-
-**Step 5: Commit**
-
-```bash
-git add .
-git commit -m "feat: add Scala evaluator for compilation and tests"
-```
-
----
-
-## Task 6: Benchmark Runner
-
-**Files:**
-- Create: `model-benchmark/src/main/scala/benchmark/runner/BenchmarkRunner.scala`
-- Create: `model-benchmark/src/test/scala/benchmark/runner/BenchmarkRunnerTest.scala`
+- Create: `model-benchmark/benchmark/models.py`
+- Create: `model-benchmark/tests/test_models.py`
 
 **Step 1: Write failing test**
 
-```scala
-// src/test/scala/benchmark/runner/BenchmarkRunnerTest.scala
-package benchmark.runner
+```python
+# tests/test_models.py
+from benchmark.models import Model, EvalResult
 
-import benchmark.domain.{Model, Task, EvalResult}
-import munit.FunSuite
-
-class BenchmarkRunnerTest extends FunSuite {
-
-  test("runTask returns EvalResult for each model") {
-    val task = Task(
-      name = "test",
-      language = "scala",
-      complexity = "simple",
-      description = "Test",
-      prompt = "Write hello world",
-      scaffold = "",
-      tests = "",
-      thresholds = Map.empty
+def test_score_zero_when_not_compiles():
+    result = EvalResult(
+        task_name="test",
+        model=Model.HAIKU,
+        compiles=False,
+        tests_pass=False,
+        quality_scores={},
+        raw_output="",
+        extracted_code=None,
+        cost=0.001,
     )
+    assert result.score == 0
 
-    // Mock client that returns fixed response
-    val mockClient: (Task, Model) => ClaudeResponse = (_, _) =>
-      ClaudeResponse("```scala\nprintln(\"hello\")\n```", 0.001)
+def test_score_40_when_tests_fail():
+    result = EvalResult(
+        task_name="test",
+        model=Model.HAIKU,
+        compiles=True,
+        tests_pass=False,
+        quality_scores={"lint": 80},
+        raw_output="",
+        extracted_code="code",
+        cost=0.001,
+    )
+    assert result.score == 40
 
-    val results = BenchmarkRunner.runTask(task, List(Model.Haiku), mockClient)
-
-    assertEquals(results.size, 1)
-    assertEquals(results.head.model, Model.Haiku)
-    assertEquals(results.head.extractedCode, Some("println(\"hello\")"))
-  }
-}
+def test_score_includes_quality_when_tests_pass():
+    result = EvalResult(
+        task_name="test",
+        model=Model.HAIKU,
+        compiles=True,
+        tests_pass=True,
+        quality_scores={"lint": 100},
+        raw_output="",
+        extracted_code="code",
+        cost=0.001,
+    )
+    # 40 + (100 * 0.6) = 100
+    assert result.score == 100
 ```
 
 **Step 2: Run test to verify it fails**
 
 ```bash
-sbt test
+pytest tests/test_models.py -v
 ```
 
-Expected: Compilation error
+Expected: ImportError
 
-**Step 3: Implement BenchmarkRunner**
+**Step 3: Implement models**
 
-```scala
-// src/main/scala/benchmark/runner/BenchmarkRunner.scala
-package benchmark.runner
+```python
+# benchmark/models.py
+from dataclasses import dataclass
+from enum import Enum
+from typing import Optional
 
-import benchmark.domain.{Model, Task, EvalResult}
-import benchmark.evaluator.ScalaEvaluator
+class Model(Enum):
+    HAIKU = ("claude-3-5-haiku-20241022", 0.001, 0.005)
+    SONNET = ("claude-sonnet-4-20250514", 0.003, 0.015)
+    OPUS = ("claude-opus-4-20250514", 0.015, 0.075)
 
-object BenchmarkRunner:
+    def __init__(self, model_id: str, cost_per_1k_input: float, cost_per_1k_output: float):
+        self.model_id = model_id
+        self.cost_per_1k_input = cost_per_1k_input
+        self.cost_per_1k_output = cost_per_1k_output
 
-  type ClientFn = (Task, Model) => ClaudeResponse
+@dataclass
+class Task:
+    name: str
+    type: str  # "code" or "skill"
+    language: str  # "scala", "kotlin", or "skill"
+    complexity: str  # "simple", "medium", "complex"
+    description: str
+    prompt: str
+    scaffold: str = ""
+    tests: str = ""
+    skill_path: str = ""
+    checks: list = None
+    fuzzy_checks: list = None
+    thresholds: dict = None
 
-  def runTask(task: Task, models: List[Model], client: ClientFn): List[EvalResult] =
-    models.map { model =>
-      val response = client(task, model)
-      val extractedCode = ClaudeClient.extractCode(response.text)
+    def __post_init__(self):
+        self.checks = self.checks or []
+        self.fuzzy_checks = self.fuzzy_checks or []
+        self.thresholds = self.thresholds or {}
 
-      extractedCode match
-        case None =>
-          EvalResult(
-            taskName = task.name,
-            model = model,
-            compiles = false,
-            testsPass = false,
-            qualityScores = Map.empty,
-            rawOutput = response.text,
-            extractedCode = None,
-            cost = response.cost
-          )
+@dataclass
+class EvalResult:
+    task_name: str
+    model: Model
+    compiles: bool
+    tests_pass: bool
+    quality_scores: dict[str, int]
+    raw_output: str
+    extracted_code: Optional[str]
+    cost: float
 
-        case Some(code) =>
-          val compiles = ScalaEvaluator.compiles(code)
-          val testsPass = if compiles && task.tests.nonEmpty then
-            ScalaEvaluator.runTests(code, task.tests)
-          else false
+    @property
+    def score(self) -> int:
+        if not self.compiles:
+            return 0
+        if not self.tests_pass:
+            return 40
+        if not self.quality_scores:
+            return 100
+        quality_avg = sum(self.quality_scores.values()) / len(self.quality_scores)
+        return 40 + int(quality_avg * 0.6)
 
-          val qualityScores = if compiles then
-            ScalaEvaluator.evaluate(code, task)
-          else Map.empty[String, Int]
+@dataclass
+class SkillCheckResult:
+    check_type: str
+    description: str
+    passed: bool
+    details: str = ""
 
-          EvalResult(
-            taskName = task.name,
-            model = model,
-            compiles = compiles,
-            testsPass = testsPass,
-            qualityScores = qualityScores,
-            rawOutput = response.text,
-            extractedCode = Some(code),
-            cost = response.cost
-          )
-    }
+@dataclass
+class SkillEvalResult:
+    task_name: str
+    model: Model
+    checks: list[SkillCheckResult]
+    raw_output: str
+    cost: float
 
-  def runSuite(
-      tasks: List[Task],
-      models: List[Model],
-      client: ClientFn
-  ): Map[String, List[EvalResult]] =
-    tasks.map(task => task.name -> runTask(task, models, client)).toMap
+    @property
+    def score(self) -> int:
+        if not self.checks:
+            return 0
+        passed = sum(1 for c in self.checks if c.passed)
+        return int((passed / len(self.checks)) * 100)
 ```
 
-**Step 4: Run tests to verify they pass**
+**Step 4: Run tests**
 
 ```bash
-sbt test
+pytest tests/test_models.py -v
 ```
 
-Expected: All tests pass
+Expected: All pass
 
 **Step 5: Commit**
 
 ```bash
 git add .
-git commit -m "feat: add benchmark runner to orchestrate task execution"
+git commit -m "feat: add domain models with score calculation"
 ```
 
 ---
 
-## Task 7: Report Generator
+## Task 3: Task Loader
 
 **Files:**
-- Create: `model-benchmark/src/main/scala/benchmark/reporter/Reporter.scala`
-- Create: `model-benchmark/src/test/scala/benchmark/reporter/ReporterTest.scala`
-
-**Step 1: Write failing test**
-
-```scala
-// src/test/scala/benchmark/reporter/ReporterTest.scala
-package benchmark.reporter
-
-import benchmark.domain.{Model, EvalResult}
-import munit.FunSuite
-
-class ReporterTest extends FunSuite {
-
-  val results = Map(
-    "task1" -> List(
-      EvalResult("task1", Model.Haiku, true, true, Map("scalafmt" -> 90), "", Some(""), 0.001),
-      EvalResult("task1", Model.Opus, true, true, Map("scalafmt" -> 95), "", Some(""), 0.01)
-    ),
-    "task2" -> List(
-      EvalResult("task2", Model.Haiku, true, false, Map.empty, "", Some(""), 0.001),
-      EvalResult("task2", Model.Opus, true, true, Map("scalafmt" -> 100), "", Some(""), 0.01)
-    )
-  )
-
-  test("generates markdown report with summary table") {
-    val report = Reporter.generateMarkdown(results)
-    assert(report.contains("| Model"))
-    assert(report.contains("Haiku"))
-    assert(report.contains("Opus"))
-  }
-
-  test("identifies close calls within threshold") {
-    val closeCalls = Reporter.findCloseCalls(results, threshold = 10)
-    assertEquals(closeCalls.size, 1)
-    assertEquals(closeCalls.head._1, "task1")
-  }
-}
-```
-
-**Step 2: Run test to verify it fails**
-
-```bash
-sbt test
-```
-
-Expected: Compilation error
-
-**Step 3: Implement Reporter**
-
-```scala
-// src/main/scala/benchmark/reporter/Reporter.scala
-package benchmark.reporter
-
-import benchmark.domain.{Model, EvalResult}
-import java.time.LocalDate
-
-object Reporter:
-
-  case class ModelSummary(model: Model, avgScore: Int, totalCost: Double, tasksWon: Int)
-
-  def generateMarkdown(results: Map[String, List[EvalResult]]): String =
-    val summaries = summarizeByModel(results)
-    val closeCalls = findCloseCalls(results, threshold = 5)
-    val date = LocalDate.now()
-
-    s"""# Benchmark Results - $date
-       |
-       |## Summary
-       |
-       || Model | Avg Score | Cost | Tasks Won |
-       ||-------|-----------|------|-----------|
-       |${summaries.map(s => s"| ${s.model} | ${s.avgScore}% | $$${f"${s.totalCost}%.4f"} | ${s.tasksWon}/${results.size} |").mkString("\n")}
-       |
-       |## Recommendations
-       |
-       |${generateRecommendations(summaries)}
-       |
-       |## Close Calls (need blind review)
-       |
-       |${if closeCalls.isEmpty then "None" else closeCalls.map((name, results) =>
-         s"- $name (${results.map(r => s"${r.model}: ${r.score}").mkString(", ")})"
-       ).mkString("\n")}
-       |
-       |## Full Results
-       |
-       |${generateDetailedResults(results)}
-       |""".stripMargin
-
-  def summarizeByModel(results: Map[String, List[EvalResult]]): List[ModelSummary] =
-    val allResults = results.values.flatten.toList
-    val models = allResults.map(_.model).distinct
-
-    models.map { model =>
-      val modelResults = allResults.filter(_.model == model)
-      val avgScore = if modelResults.nonEmpty then
-        modelResults.map(_.score).sum / modelResults.size
-      else 0
-      val totalCost = modelResults.map(_.cost).sum
-      val tasksWon = results.count { case (_, taskResults) =>
-        taskResults.filter(_.model == model).exists { r =>
-          r.score == taskResults.map(_.score).max
-        }
-      }
-      ModelSummary(model, avgScore, totalCost, tasksWon)
-    }.sortBy(-_.avgScore)
-
-  def findCloseCalls(
-      results: Map[String, List[EvalResult]],
-      threshold: Int
-  ): List[(String, List[EvalResult])] =
-    results.toList.filter { case (_, taskResults) =>
-      val scores = taskResults.map(_.score).sorted.reverse
-      scores.length >= 2 && (scores(0) - scores(1)) <= threshold
-    }
-
-  private def generateRecommendations(summaries: List[ModelSummary]): String =
-    summaries match
-      case best :: rest =>
-        s"- **Best overall**: ${best.model} (${best.avgScore}% avg)\n" +
-        rest.map(s => s"- ${s.model}: ${s.avgScore}% avg, $$${f"${s.totalCost}%.4f"} cost").mkString("\n")
-      case _ => "No data"
-
-  private def generateDetailedResults(results: Map[String, List[EvalResult]]): String =
-    results.toList.sortBy(_._1).map { case (name, taskResults) =>
-      s"### $name\n\n" +
-      taskResults.sortBy(-_.score).map { r =>
-        s"- **${r.model}**: ${r.score}% (compiles: ${r.compiles}, tests: ${r.testsPass})"
-      }.mkString("\n")
-    }.mkString("\n\n")
-```
-
-**Step 4: Run tests to verify they pass**
-
-```bash
-sbt test
-```
-
-Expected: All tests pass
-
-**Step 5: Commit**
-
-```bash
-git add .
-git commit -m "feat: add report generator with markdown output"
-```
-
----
-
-## Task 8: Blind Review System
-
-**Files:**
-- Create: `model-benchmark/src/main/scala/benchmark/reporter/BlindReview.scala`
-- Create: `model-benchmark/src/test/scala/benchmark/reporter/BlindReviewTest.scala`
-
-**Step 1: Write failing test**
-
-```scala
-// src/test/scala/benchmark/reporter/BlindReviewTest.scala
-package benchmark.reporter
-
-import benchmark.domain.{Model, EvalResult}
-import munit.FunSuite
-
-class BlindReviewTest extends FunSuite {
-
-  test("shuffles options and hides model names") {
-    val results = List(
-      EvalResult("task1", Model.Haiku, true, true, Map.empty, "", Some("code A"), 0.001),
-      EvalResult("task1", Model.Opus, true, true, Map.empty, "", Some("code B"), 0.01)
-    )
-
-    val review = BlindReview.prepare("task1", results)
-
-    assertEquals(review.taskName, "task1")
-    assertEquals(review.options.size, 2)
-    assert(review.options.forall(o => o.label == "A" || o.label == "B"))
-    // Model should be hidden in the option
-    assert(!review.options.map(_.code).mkString.contains("Haiku"))
-  }
-
-  test("resolves winner correctly") {
-    val review = BlindReview.ReviewSession(
-      taskName = "task1",
-      options = List(
-        BlindReview.Option("A", "code A", Model.Haiku),
-        BlindReview.Option("B", "code B", Model.Opus)
-      )
-    )
-
-    val result = BlindReview.resolve(review, choice = "A")
-    assertEquals(result.winner, Model.Haiku)
-  }
-
-  test("tie goes to cheaper model") {
-    val review = BlindReview.ReviewSession(
-      taskName = "task1",
-      options = List(
-        BlindReview.Option("A", "code A", Model.Opus),
-        BlindReview.Option("B", "code B", Model.Haiku)
-      )
-    )
-
-    val result = BlindReview.resolve(review, choice = "tie")
-    assertEquals(result.winner, Model.Haiku)
-  }
-}
-```
-
-**Step 2: Run test to verify it fails**
-
-```bash
-sbt test
-```
-
-Expected: Compilation error
-
-**Step 3: Implement BlindReview**
-
-```scala
-// src/main/scala/benchmark/reporter/BlindReview.scala
-package benchmark.reporter
-
-import benchmark.domain.{Model, EvalResult}
-import scala.util.Random
-
-object BlindReview:
-
-  case class Option(label: String, code: String, model: Model)
-  case class ReviewSession(taskName: String, options: List[Option])
-  case class ReviewResult(taskName: String, choice: String, winner: Model, reason: String)
-
-  def prepare(taskName: String, results: List[EvalResult]): ReviewSession =
-    val shuffled = Random.shuffle(results.filter(_.extractedCode.isDefined))
-    val labels = List("A", "B", "C", "D").take(shuffled.size)
-
-    val options = shuffled.zip(labels).map { case (result, label) =>
-      Option(label, result.extractedCode.getOrElse(""), result.model)
-    }
-
-    ReviewSession(taskName, options)
-
-  def resolve(session: ReviewSession, choice: String): ReviewResult =
-    val winner = choice.toLowerCase match
-      case "tie" =>
-        // Tie goes to cheaper model
-        session.options.map(_.model).minBy(_.costPer1kInput)
-      case label =>
-        session.options.find(_.label.equalsIgnoreCase(label)).map(_.model).getOrElse(
-          session.options.head.model
-        )
-
-    val reason = if choice.toLowerCase == "tie" then "cost" else "quality"
-    ReviewResult(session.taskName, choice, winner, reason)
-
-  def formatForDisplay(session: ReviewSession): String =
-    val header = s"Close call: ${session.taskName}\n"
-    val options = session.options.map { opt =>
-      s"""--- Option ${opt.label} ---
-         |${opt.code}
-         |""".stripMargin
-    }.mkString("\n")
-
-    header + options + "\nWhich is better? [" + session.options.map(_.label).mkString("/") + "/tie]: "
-```
-
-**Step 4: Run tests to verify they pass**
-
-```bash
-sbt test
-```
-
-Expected: All tests pass
-
-**Step 5: Commit**
-
-```bash
-git add .
-git commit -m "feat: add blind review system for close calls"
-```
-
----
-
-## Task 9: CLI Interface
-
-**Files:**
-- Create: `model-benchmark/src/main/scala/benchmark/Main.scala`
-
-**Step 1: Implement CLI with decline**
-
-```scala
-// src/main/scala/benchmark/Main.scala
-package benchmark
-
-import benchmark.domain.{Model, Task}
-import benchmark.runner.{BenchmarkRunner, ClaudeClient, ClaudeResponse}
-import benchmark.reporter.{Reporter, BlindReview}
-import benchmark.tasks.TaskLoader
-import com.monovore.decline.*
-import java.nio.file.{Files, Path, Paths}
-import scala.io.StdIn
-
-object Main
-    extends CommandApp(
-      name = "model-benchmark",
-      header = "Benchmark Claude models on coding tasks",
-      main = {
-        val runCmd = Opts.subcommand("run", "Run benchmark suite") {
-          val suite = Opts.option[String]("suite", "Task suite to run (e.g., scala-simple)").orNone
-          val task = Opts.option[String]("task", "Single task path to run").orNone
-          val models = Opts
-            .option[String]("models", "Comma-separated models (haiku,sonnet,opus)")
-            .withDefault("haiku,sonnet,opus")
-          (suite, task, models).mapN { (suiteOpt, taskOpt, modelsStr) =>
-            runBenchmark(suiteOpt, taskOpt, parseModels(modelsStr))
-          }
-        }
-
-        val listCmd = Opts.subcommand("list", "List available tasks") {
-          Opts.unit.map(_ => listTasks())
-        }
-
-        val reviewCmd = Opts.subcommand("review", "Review close calls from last run") {
-          Opts.unit.map(_ => reviewCloseCalls())
-        }
-
-        runCmd orElse listCmd orElse reviewCmd
-      }
-    )
-
-def parseModels(str: String): List[Model] =
-  str.split(",").toList.flatMap {
-    case "haiku"  => Some(Model.Haiku)
-    case "sonnet" => Some(Model.Sonnet)
-    case "opus"   => Some(Model.Opus)
-    case _        => None
-  }
-
-def runBenchmark(suite: Option[String], task: Option[String], models: List[Model]): Unit =
-  val apiKey = sys.env.getOrElse("ANTHROPIC_API_KEY", {
-    println("Error: ANTHROPIC_API_KEY not set")
-    sys.exit(1)
-  })
-
-  val tasks = (suite, task) match
-    case (Some(s), _) =>
-      val parts = s.split("-")
-      val dir = Paths.get(s"tasks/${parts(0)}/${parts(1)}")
-      if Files.exists(dir) then TaskLoader.fromDirectory(dir)
-      else
-        println(s"Suite not found: $s")
-        sys.exit(1)
-    case (_, Some(t)) =>
-      val path = Paths.get(s"tasks/$t.yaml")
-      if Files.exists(path) then List(TaskLoader.fromFile(path))
-      else
-        println(s"Task not found: $t")
-        sys.exit(1)
-    case _ =>
-      println("Specify --suite or --task")
-      sys.exit(1)
-
-  println(s"Running ${tasks.size} tasks with models: ${models.mkString(", ")}")
-
-  val client: (Task, Model) => ClaudeResponse = (t, m) =>
-    println(s"  Running ${t.name} with ${m}...")
-    ClaudeClient.sendRequest(t, m, apiKey)
-
-  val results = BenchmarkRunner.runSuite(tasks, models, client)
-
-  val report = Reporter.generateMarkdown(results)
-  val reportPath = Paths.get(s"reports/benchmark-${java.time.LocalDate.now()}.md")
-  Files.createDirectories(reportPath.getParent)
-  Files.writeString(reportPath, report)
-
-  println(s"\nReport saved to: $reportPath")
-  println(report)
-
-  // Save results for review command
-  saveResults(results)
-
-def listTasks(): Unit =
-  val tasksDir = Paths.get("tasks")
-  if !Files.exists(tasksDir) then
-    println("No tasks directory found")
-    return
-
-  println("Available tasks:\n")
-  Files
-    .walk(tasksDir)
-    .filter(p => p.toString.endsWith(".yaml"))
-    .forEach { path =>
-      val relative = tasksDir.relativize(path).toString.replace(".yaml", "")
-      println(s"  $relative")
-    }
-
-def reviewCloseCalls(): Unit =
-  val resultsPath = Paths.get("reports/last-results.json")
-  if !Files.exists(resultsPath) then
-    println("No results to review. Run a benchmark first.")
-    return
-
-  // Load and review (simplified - would need JSON deserialization)
-  println("Review functionality - load from last-results.json")
-
-def saveResults(results: Map[String, List[benchmark.domain.EvalResult]]): Unit =
-  // Simplified - would serialize to JSON
-  val path = Paths.get("reports/last-results.json")
-  Files.createDirectories(path.getParent)
-  Files.writeString(path, results.toString)
-```
-
-**Step 2: Test CLI compiles and shows help**
-
-```bash
-sbt "run --help"
-```
-
-Expected: Shows usage information
-
-**Step 3: Commit**
-
-```bash
-git add .
-git commit -m "feat: add CLI interface with run, list, review commands"
-```
-
----
-
-## Task 10: Create Sample Task Suite
-
-**Files:**
+- Create: `model-benchmark/benchmark/loader.py`
+- Create: `model-benchmark/tests/test_loader.py`
 - Create: `model-benchmark/tasks/scala/simple/sum-list.yaml`
-- Create: `model-benchmark/tasks/scala/simple/reverse-string.yaml`
-- Create: `model-benchmark/tasks/scala/simple/find-max.yaml`
-- Create: `model-benchmark/tasks/scala/medium/flatten-nested.yaml`
-- Create: `model-benchmark/tasks/scala/medium/group-by-key.yaml`
 
-**Step 1: Create simple tasks**
+**Step 1: Write failing test**
+
+```python
+# tests/test_loader.py
+import tempfile
+from pathlib import Path
+from benchmark.loader import load_task, load_suite
+
+SAMPLE_YAML = """
+name: test-task
+type: code
+language: scala
+complexity: simple
+description: Test task
+prompt: Write code
+scaffold: ""
+tests: assert(true)
+thresholds:
+  compiles: required
+"""
+
+def test_load_task_from_yaml():
+    with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+        f.write(SAMPLE_YAML)
+        f.flush()
+        task = load_task(Path(f.name))
+
+    assert task.name == "test-task"
+    assert task.type == "code"
+    assert task.language == "scala"
+
+def test_load_suite():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        p = Path(tmpdir)
+        (p / "task1.yaml").write_text(SAMPLE_YAML)
+        (p / "task2.yaml").write_text(SAMPLE_YAML.replace("test-task", "task-2"))
+
+        tasks = load_suite(p)
+        assert len(tasks) == 2
+```
+
+**Step 2: Run test to verify it fails**
+
+```bash
+pytest tests/test_loader.py -v
+```
+
+Expected: ImportError
+
+**Step 3: Implement loader**
+
+```python
+# benchmark/loader.py
+from pathlib import Path
+import yaml
+from benchmark.models import Task
+
+def load_task(path: Path) -> Task:
+    with open(path) as f:
+        data = yaml.safe_load(f)
+
+    return Task(
+        name=data["name"],
+        type=data.get("type", "code"),
+        language=data.get("language", "scala"),
+        complexity=data.get("complexity", "simple"),
+        description=data.get("description", ""),
+        prompt=data["prompt"],
+        scaffold=data.get("scaffold", ""),
+        tests=data.get("tests", ""),
+        skill_path=data.get("skill_path", ""),
+        checks=data.get("checks", []),
+        fuzzy_checks=data.get("fuzzy_checks", []),
+        thresholds=data.get("thresholds", {}),
+    )
+
+def load_suite(directory: Path) -> list[Task]:
+    tasks = []
+    for path in directory.glob("*.yaml"):
+        tasks.append(load_task(path))
+    for path in directory.glob("*.yml"):
+        tasks.append(load_task(path))
+    return sorted(tasks, key=lambda t: t.name)
+
+def find_suite(name: str, base_dir: Path = Path("tasks")) -> Path:
+    """Find suite directory from name like 'scala-simple'."""
+    parts = name.split("-", 1)
+    if len(parts) == 2:
+        return base_dir / parts[0] / parts[1]
+    return base_dir / name
+```
+
+**Step 4: Run tests**
+
+```bash
+pytest tests/test_loader.py -v
+```
+
+Expected: All pass
+
+**Step 5: Create sample task**
 
 ```yaml
 # tasks/scala/simple/sum-list.yaml
 name: sum-list
+type: code
 language: scala
 complexity: simple
-description: "Sum all integers in a list"
+description: Sum all integers in a list
 
 prompt: |
   Write a Scala function that sums all integers in a list.
@@ -1311,12 +404,901 @@ thresholds:
   tests_pass: required
 ```
 
+**Step 6: Commit**
+
+```bash
+mkdir -p tasks/scala/simple
+git add .
+git commit -m "feat: add YAML task loader"
+```
+
+---
+
+## Task 4: Claude Client
+
+**Files:**
+- Create: `model-benchmark/benchmark/client.py`
+- Create: `model-benchmark/tests/test_client.py`
+
+**Step 1: Write failing test**
+
+```python
+# tests/test_client.py
+from benchmark.client import extract_code, parse_response
+from benchmark.models import Model
+
+def test_extract_code_from_scala_block():
+    text = """Here's the code:
+
+```scala
+def sumList(nums: List[Int]): Int = nums.sum
+```
+
+This uses the built-in sum."""
+
+    code = extract_code(text)
+    assert code == "def sumList(nums: List[Int]): Int = nums.sum"
+
+def test_extract_code_from_plain_block():
+    text = """```
+def foo = 1
+```"""
+    code = extract_code(text)
+    assert code == "def foo = 1"
+
+def test_extract_code_returns_none_when_missing():
+    assert extract_code("No code here") is None
+
+def test_parse_response():
+    json_str = """{
+        "content": [{"type": "text", "text": "Hello"}],
+        "usage": {"input_tokens": 100, "output_tokens": 50}
+    }"""
+
+    text, cost = parse_response(json_str, Model.HAIKU)
+    assert text == "Hello"
+    assert cost > 0
+```
+
+**Step 2: Run test to verify it fails**
+
+```bash
+pytest tests/test_client.py -v
+```
+
+Expected: ImportError
+
+**Step 3: Implement client**
+
+```python
+# benchmark/client.py
+import json
+import os
+import re
+import httpx
+from benchmark.models import Model, Task
+
+CODE_BLOCK_RE = re.compile(r"```(?:\w+)?\s*\n([\s\S]*?)\n```")
+
+def extract_code(text: str) -> str | None:
+    match = CODE_BLOCK_RE.search(text)
+    return match.group(1).strip() if match else None
+
+def parse_response(json_str: str, model: Model) -> tuple[str, float]:
+    data = json.loads(json_str)
+    text = data["content"][0]["text"]
+    usage = data["usage"]
+    cost = (
+        usage["input_tokens"] * model.cost_per_1k_input +
+        usage["output_tokens"] * model.cost_per_1k_output
+    ) / 1000
+    return text, cost
+
+def call_claude(prompt: str, model: Model, system: str = "") -> tuple[str, float]:
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY not set")
+
+    messages = [{"role": "user", "content": prompt}]
+    body = {
+        "model": model.model_id,
+        "max_tokens": 4096,
+        "messages": messages,
+    }
+    if system:
+        body["system"] = system
+
+    response = httpx.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json=body,
+        timeout=120,
+    )
+    response.raise_for_status()
+    return parse_response(response.text, model)
+
+def run_task_prompt(task: Task, model: Model) -> tuple[str, float]:
+    """Run a task's prompt through Claude and return response + cost."""
+    return call_claude(task.prompt, model)
+```
+
+**Step 4: Run tests**
+
+```bash
+pytest tests/test_client.py -v
+```
+
+Expected: All pass
+
+**Step 5: Commit**
+
+```bash
+git add .
+git commit -m "feat: add Claude API client"
+```
+
+---
+
+## Task 5: Code Evaluator (Scala)
+
+**Files:**
+- Create: `model-benchmark/benchmark/evaluators/__init__.py`
+- Create: `model-benchmark/benchmark/evaluators/scala.py`
+- Create: `model-benchmark/tests/test_scala_evaluator.py`
+
+**Step 1: Write failing test**
+
+```python
+# tests/test_scala_evaluator.py
+import pytest
+from benchmark.evaluators.scala import compile_scala, run_scala_tests
+
+def test_compile_valid_scala():
+    code = "def add(a: Int, b: Int): Int = a + b"
+    assert compile_scala(code) is True
+
+def test_compile_invalid_scala():
+    code = "def add(a: Int, b: Int): Int = a + c"  # undefined c
+    assert compile_scala(code) is False
+
+def test_run_passing_tests():
+    code = "def add(a: Int, b: Int): Int = a + b"
+    tests = "assert(add(1, 2) == 3)"
+    assert run_scala_tests(code, tests) is True
+
+def test_run_failing_tests():
+    code = "def add(a: Int, b: Int): Int = a - b"  # wrong impl
+    tests = "assert(add(1, 2) == 3)"
+    assert run_scala_tests(code, tests) is False
+```
+
+**Step 2: Run test to verify it fails**
+
+```bash
+pytest tests/test_scala_evaluator.py -v
+```
+
+Expected: ImportError
+
+**Step 3: Implement Scala evaluator**
+
+```python
+# benchmark/evaluators/__init__.py
+"""Code evaluators for different languages."""
+
+# benchmark/evaluators/scala.py
+import subprocess
+import tempfile
+from pathlib import Path
+
+def compile_scala(code: str) -> bool:
+    """Compile Scala code, return True if successful."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        source = Path(tmpdir) / "Code.scala"
+        source.write_text(code)
+
+        result = subprocess.run(
+            ["scalac", "-d", tmpdir, str(source)],
+            capture_output=True,
+            timeout=60,
+        )
+        return result.returncode == 0
+
+def run_scala_tests(code: str, tests: str) -> bool:
+    """Compile and run Scala code with test assertions."""
+    full_code = f"""
+{code}
+
+@main def runTests(): Unit = {{
+  {tests}
+  println("TESTS_PASSED")
+}}
+"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        source = Path(tmpdir) / "Test.scala"
+        source.write_text(full_code)
+
+        # Compile
+        compile_result = subprocess.run(
+            ["scalac", "-d", tmpdir, str(source)],
+            capture_output=True,
+            timeout=60,
+        )
+        if compile_result.returncode != 0:
+            return False
+
+        # Run
+        run_result = subprocess.run(
+            ["scala", "-cp", tmpdir, "runTests"],
+            capture_output=True,
+            timeout=30,
+        )
+        return b"TESTS_PASSED" in run_result.stdout
+
+def check_scalafmt(code: str) -> int:
+    """Check code formatting, return score 0-100."""
+    with tempfile.NamedTemporaryFile(suffix=".scala", mode="w", delete=False) as f:
+        f.write(code)
+        f.flush()
+
+        result = subprocess.run(
+            ["scalafmt", "--check", f.name],
+            capture_output=True,
+        )
+        # Simple scoring: 100 if formatted, 70 if not
+        return 100 if result.returncode == 0 else 70
+```
+
+**Step 4: Run tests**
+
+```bash
+pytest tests/test_scala_evaluator.py -v
+```
+
+Expected: All pass (requires scalac in PATH)
+
+**Step 5: Commit**
+
+```bash
+git add .
+git commit -m "feat: add Scala evaluator"
+```
+
+---
+
+## Task 6: Skill Evaluator
+
+**Files:**
+- Create: `model-benchmark/benchmark/evaluators/skill.py`
+- Create: `model-benchmark/tests/test_skill_evaluator.py`
+
+**Step 1: Write failing test**
+
+```python
+# tests/test_skill_evaluator.py
+from benchmark.evaluators.skill import run_check, CheckType
+
+def test_contains_question():
+    response = "What error message are you seeing?"
+    result = run_check(response, {"type": "contains_question"})
+    assert result.passed is True
+
+def test_contains_question_fails():
+    response = "Here is the fix for your code."
+    result = run_check(response, {"type": "contains_question"})
+    assert result.passed is False
+
+def test_mentions_any():
+    response = "First, let's reproduce the issue."
+    result = run_check(response, {
+        "type": "mentions_any",
+        "terms": ["reproduce", "replicate"],
+    })
+    assert result.passed is True
+
+def test_mentions_any_fails():
+    response = "Here's the fix."
+    result = run_check(response, {
+        "type": "mentions_any",
+        "terms": ["reproduce", "replicate"],
+    })
+    assert result.passed is False
+
+def test_not_contains():
+    response = "Let me investigate first."
+    result = run_check(response, {
+        "type": "not_contains",
+        "terms": ["just try", "simply"],
+    })
+    assert result.passed is True
+
+def test_has_section():
+    response = "## Root Cause\nThe issue is..."
+    result = run_check(response, {
+        "type": "has_section",
+        "pattern": "(?i)root cause",
+    })
+    assert result.passed is True
+```
+
+**Step 2: Run test to verify it fails**
+
+```bash
+pytest tests/test_skill_evaluator.py -v
+```
+
+Expected: ImportError
+
+**Step 3: Implement skill evaluator**
+
+```python
+# benchmark/evaluators/skill.py
+import re
+from dataclasses import dataclass
+from enum import Enum
+from benchmark.models import SkillCheckResult
+
+class CheckType(Enum):
+    CONTAINS_QUESTION = "contains_question"
+    MENTIONS_ANY = "mentions_any"
+    MENTIONS_ALL = "mentions_all"
+    NOT_CONTAINS = "not_contains"
+    NOT_BEFORE = "not_before"
+    HAS_SECTION = "has_section"
+    REGEX_MATCH = "regex_match"
+
+def run_check(response: str, check: dict) -> SkillCheckResult:
+    """Run a single check against a response."""
+    check_type = check["type"]
+    description = check.get("description", check_type)
+
+    if check_type == "contains_question":
+        # Look for question marks in questioning context
+        passed = "?" in response and any(
+            q in response.lower()
+            for q in ["what", "how", "why", "when", "where", "which", "can you", "could you", "do you"]
+        )
+        return SkillCheckResult(check_type, description, passed)
+
+    elif check_type == "mentions_any":
+        terms = check["terms"]
+        response_lower = response.lower()
+        passed = any(term.lower() in response_lower for term in terms)
+        return SkillCheckResult(check_type, description, passed)
+
+    elif check_type == "mentions_all":
+        terms = check["terms"]
+        response_lower = response.lower()
+        passed = all(term.lower() in response_lower for term in terms)
+        return SkillCheckResult(check_type, description, passed)
+
+    elif check_type == "not_contains":
+        terms = check["terms"]
+        response_lower = response.lower()
+        passed = not any(term.lower() in response_lower for term in terms)
+        return SkillCheckResult(check_type, description, passed)
+
+    elif check_type == "not_before":
+        pattern = check["pattern"]
+        before_pattern = check["before_pattern"]
+        # Find first occurrence of each
+        match_a = re.search(pattern, response, re.IGNORECASE)
+        match_b = re.search(before_pattern, response, re.IGNORECASE)
+        if match_a is None:
+            passed = True  # Pattern A not found, so it's not before B
+        elif match_b is None:
+            passed = False  # A found but B not found
+        else:
+            passed = match_b.start() < match_a.start()
+        return SkillCheckResult(check_type, description, passed)
+
+    elif check_type == "has_section":
+        pattern = check["pattern"]
+        passed = re.search(pattern, response, re.IGNORECASE) is not None
+        return SkillCheckResult(check_type, description, passed)
+
+    elif check_type == "regex_match":
+        pattern = check["pattern"]
+        passed = re.search(pattern, response) is not None
+        return SkillCheckResult(check_type, description, passed)
+
+    else:
+        return SkillCheckResult(check_type, description, False, f"Unknown check type: {check_type}")
+
+def run_all_checks(response: str, checks: list[dict]) -> list[SkillCheckResult]:
+    """Run all checks and return results."""
+    return [run_check(response, check) for check in checks]
+```
+
+**Step 4: Run tests**
+
+```bash
+pytest tests/test_skill_evaluator.py -v
+```
+
+Expected: All pass
+
+**Step 5: Commit**
+
+```bash
+git add .
+git commit -m "feat: add skill behavior evaluator with check types"
+```
+
+---
+
+## Task 7: Benchmark Runner
+
+**Files:**
+- Create: `model-benchmark/benchmark/runner.py`
+- Create: `model-benchmark/tests/test_runner.py`
+
+**Step 1: Write failing test**
+
+```python
+# tests/test_runner.py
+from benchmark.runner import run_code_task, run_skill_task
+from benchmark.models import Model, Task
+
+def test_run_code_task_with_mock():
+    task = Task(
+        name="test",
+        type="code",
+        language="scala",
+        complexity="simple",
+        description="Test",
+        prompt="Write hello",
+        tests="",
+    )
+
+    # Mock client
+    def mock_client(prompt, model):
+        return "```scala\nprintln(\"hello\")\n```", 0.001
+
+    result = run_code_task(task, Model.HAIKU, client=mock_client)
+
+    assert result.task_name == "test"
+    assert result.model == Model.HAIKU
+    assert result.extracted_code == 'println("hello")'
+```
+
+**Step 2: Run test to verify it fails**
+
+```bash
+pytest tests/test_runner.py -v
+```
+
+Expected: ImportError
+
+**Step 3: Implement runner**
+
+```python
+# benchmark/runner.py
+from pathlib import Path
+from typing import Callable
+from benchmark.models import Model, Task, EvalResult, SkillEvalResult
+from benchmark.client import extract_code, call_claude
+from benchmark.evaluators.scala import compile_scala, run_scala_tests, check_scalafmt
+from benchmark.evaluators.skill import run_all_checks
+
+ClientFn = Callable[[str, Model], tuple[str, float]]
+
+def run_code_task(
+    task: Task,
+    model: Model,
+    client: ClientFn = None,
+) -> EvalResult:
+    """Run a code task and evaluate the result."""
+    if client is None:
+        client = call_claude
+
+    raw_output, cost = client(task.prompt, model)
+    extracted_code = extract_code(raw_output)
+
+    if extracted_code is None:
+        return EvalResult(
+            task_name=task.name,
+            model=model,
+            compiles=False,
+            tests_pass=False,
+            quality_scores={},
+            raw_output=raw_output,
+            extracted_code=None,
+            cost=cost,
+        )
+
+    # Evaluate based on language
+    if task.language == "scala":
+        compiles = compile_scala(extracted_code)
+        tests_pass = run_scala_tests(extracted_code, task.tests) if compiles and task.tests else False
+        quality_scores = {"scalafmt": check_scalafmt(extracted_code)} if compiles else {}
+    else:
+        # TODO: Add kotlin support
+        compiles = False
+        tests_pass = False
+        quality_scores = {}
+
+    return EvalResult(
+        task_name=task.name,
+        model=model,
+        compiles=compiles,
+        tests_pass=tests_pass,
+        quality_scores=quality_scores,
+        raw_output=raw_output,
+        extracted_code=extracted_code,
+        cost=cost,
+    )
+
+def run_skill_task(
+    task: Task,
+    model: Model,
+    client: ClientFn = None,
+) -> SkillEvalResult:
+    """Run a skill task and evaluate behavior."""
+    if client is None:
+        client = call_claude
+
+    # Load skill content if path provided
+    system_prompt = ""
+    if task.skill_path:
+        skill_path = Path(task.skill_path).expanduser()
+        if skill_path.exists():
+            system_prompt = skill_path.read_text()
+
+    # Run with skill as system prompt
+    raw_output, cost = client(task.prompt, model)
+
+    # Run behavior checks
+    check_results = run_all_checks(raw_output, task.checks)
+
+    return SkillEvalResult(
+        task_name=task.name,
+        model=model,
+        checks=check_results,
+        raw_output=raw_output,
+        cost=cost,
+    )
+
+def run_task(task: Task, model: Model, client: ClientFn = None):
+    """Run a task based on its type."""
+    if task.type == "skill":
+        return run_skill_task(task, model, client)
+    else:
+        return run_code_task(task, model, client)
+
+def run_suite(
+    tasks: list[Task],
+    models: list[Model],
+    client: ClientFn = None,
+) -> dict[str, list]:
+    """Run all tasks with all models."""
+    results = {}
+    for task in tasks:
+        task_results = []
+        for model in models:
+            print(f"  Running {task.name} with {model.name}...")
+            result = run_task(task, model, client)
+            task_results.append(result)
+        results[task.name] = task_results
+    return results
+```
+
+**Step 4: Run tests**
+
+```bash
+pytest tests/test_runner.py -v
+```
+
+Expected: All pass
+
+**Step 5: Commit**
+
+```bash
+git add .
+git commit -m "feat: add benchmark runner for code and skill tasks"
+```
+
+---
+
+## Task 8: Report Generator
+
+**Files:**
+- Create: `model-benchmark/benchmark/reporter.py`
+- Create: `model-benchmark/tests/test_reporter.py`
+
+**Step 1: Write failing test**
+
+```python
+# tests/test_reporter.py
+from benchmark.reporter import generate_report, find_close_calls
+from benchmark.models import Model, EvalResult
+
+def test_generate_report_has_summary():
+    results = {
+        "task1": [
+            EvalResult("task1", Model.HAIKU, True, True, {"lint": 90}, "", "code", 0.001),
+            EvalResult("task1", Model.OPUS, True, True, {"lint": 95}, "", "code", 0.01),
+        ]
+    }
+    report = generate_report(results)
+    assert "## Summary" in report
+    assert "Haiku" in report or "HAIKU" in report
+
+def test_find_close_calls():
+    results = {
+        "task1": [
+            EvalResult("task1", Model.HAIKU, True, True, {"lint": 90}, "", "code", 0.001),
+            EvalResult("task1", Model.OPUS, True, True, {"lint": 92}, "", "code", 0.01),
+        ]
+    }
+    close = find_close_calls(results, threshold=5)
+    assert len(close) == 1
+```
+
+**Step 2: Run test to verify it fails**
+
+```bash
+pytest tests/test_reporter.py -v
+```
+
+Expected: ImportError
+
+**Step 3: Implement reporter**
+
+```python
+# benchmark/reporter.py
+from datetime import date
+from benchmark.models import Model, EvalResult, SkillEvalResult
+
+def generate_report(results: dict[str, list]) -> str:
+    """Generate markdown benchmark report."""
+    today = date.today()
+
+    # Calculate summaries
+    summaries = calculate_summaries(results)
+    close_calls = find_close_calls(results)
+
+    report = f"""# Benchmark Results - {today}
+
+## Summary
+
+| Model | Avg Score | Cost | Tasks Won |
+|-------|-----------|------|-----------|
+"""
+    for s in summaries:
+        report += f"| {s['model']} | {s['avg_score']}% | ${s['cost']:.4f} | {s['won']}/{len(results)} |\n"
+
+    report += "\n## Recommendations\n\n"
+    if summaries:
+        best = summaries[0]
+        report += f"- **Best overall**: {best['model']} ({best['avg_score']}% avg)\n"
+
+    report += "\n## Close Calls\n\n"
+    if close_calls:
+        for name, task_results in close_calls:
+            scores = ", ".join(f"{r.model.name}: {r.score}" for r in task_results)
+            report += f"- {name} ({scores})\n"
+    else:
+        report += "None\n"
+
+    report += "\n## Full Results\n\n"
+    for name, task_results in sorted(results.items()):
+        report += f"### {name}\n\n"
+        for r in sorted(task_results, key=lambda x: -x.score):
+            report += f"- **{r.model.name}**: {r.score}%\n"
+        report += "\n"
+
+    return report
+
+def calculate_summaries(results: dict[str, list]) -> list[dict]:
+    """Calculate per-model summary statistics."""
+    all_results = [r for task_results in results.values() for r in task_results]
+    models = {r.model for r in all_results}
+
+    summaries = []
+    for model in models:
+        model_results = [r for r in all_results if r.model == model]
+        avg_score = sum(r.score for r in model_results) // len(model_results) if model_results else 0
+        total_cost = sum(r.cost for r in model_results)
+
+        # Count wins
+        won = 0
+        for task_results in results.values():
+            task_model_results = [r for r in task_results if r.model == model]
+            if task_model_results:
+                max_score = max(r.score for r in task_results)
+                if task_model_results[0].score == max_score:
+                    won += 1
+
+        summaries.append({
+            "model": model.name,
+            "avg_score": avg_score,
+            "cost": total_cost,
+            "won": won,
+        })
+
+    return sorted(summaries, key=lambda x: -x["avg_score"])
+
+def find_close_calls(results: dict[str, list], threshold: int = 5) -> list[tuple[str, list]]:
+    """Find tasks where top scores are within threshold."""
+    close = []
+    for name, task_results in results.items():
+        scores = sorted([r.score for r in task_results], reverse=True)
+        if len(scores) >= 2 and (scores[0] - scores[1]) <= threshold:
+            close.append((name, task_results))
+    return close
+
+def save_report(report: str, path: str = None):
+    """Save report to file."""
+    if path is None:
+        path = f"reports/benchmark-{date.today()}.md"
+    from pathlib import Path
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(report)
+    return path
+```
+
+**Step 4: Run tests**
+
+```bash
+pytest tests/test_reporter.py -v
+```
+
+Expected: All pass
+
+**Step 5: Commit**
+
+```bash
+git add .
+git commit -m "feat: add markdown report generator"
+```
+
+---
+
+## Task 9: Wire Up CLI
+
+**Files:**
+- Modify: `model-benchmark/benchmark/cli.py`
+
+**Step 1: Update CLI with full implementation**
+
+```python
+# benchmark/cli.py
+import os
+from pathlib import Path
+import typer
+from rich.console import Console
+from rich.table import Table
+
+from benchmark.models import Model
+from benchmark.loader import load_task, load_suite, find_suite
+from benchmark.runner import run_suite
+from benchmark.reporter import generate_report, save_report
+
+app = typer.Typer(help="Benchmark Claude models on coding tasks")
+console = Console()
+
+def parse_models(models_str: str) -> list[Model]:
+    mapping = {"haiku": Model.HAIKU, "sonnet": Model.SONNET, "opus": Model.OPUS}
+    return [mapping[m.strip().lower()] for m in models_str.split(",") if m.strip().lower() in mapping]
+
+@app.command()
+def run(
+    suite: str = typer.Option(None, "--suite", "-s", help="Task suite (e.g., scala-simple)"),
+    task: str = typer.Option(None, "--task", "-t", help="Single task path"),
+    models: str = typer.Option("haiku,sonnet,opus", "--models", "-m", help="Models to test"),
+):
+    """Run benchmark tasks."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        console.print("[red]Error: ANTHROPIC_API_KEY not set[/red]")
+        raise typer.Exit(1)
+
+    model_list = parse_models(models)
+    if not model_list:
+        console.print("[red]Error: No valid models specified[/red]")
+        raise typer.Exit(1)
+
+    # Load tasks
+    if suite:
+        suite_path = find_suite(suite)
+        if not suite_path.exists():
+            console.print(f"[red]Suite not found: {suite}[/red]")
+            raise typer.Exit(1)
+        tasks = load_suite(suite_path)
+    elif task:
+        task_path = Path(f"tasks/{task}.yaml")
+        if not task_path.exists():
+            console.print(f"[red]Task not found: {task}[/red]")
+            raise typer.Exit(1)
+        tasks = [load_task(task_path)]
+    else:
+        console.print("[red]Specify --suite or --task[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"Running {len(tasks)} tasks with {[m.name for m in model_list]}")
+
+    # Run benchmark
+    results = run_suite(tasks, model_list)
+
+    # Generate and save report
+    report = generate_report(results)
+    report_path = save_report(report)
+
+    console.print(f"\n[green]Report saved to: {report_path}[/green]\n")
+    console.print(report)
+
+@app.command("list")
+def list_tasks():
+    """List available tasks."""
+    tasks_dir = Path("tasks")
+    if not tasks_dir.exists():
+        console.print("No tasks directory found")
+        return
+
+    table = Table(title="Available Tasks")
+    table.add_column("Suite")
+    table.add_column("Task")
+    table.add_column("Type")
+
+    for yaml_file in sorted(tasks_dir.rglob("*.yaml")):
+        relative = yaml_file.relative_to(tasks_dir)
+        parts = list(relative.parts)
+        suite = f"{parts[0]}-{parts[1]}" if len(parts) >= 2 else parts[0]
+        name = yaml_file.stem
+
+        task = load_task(yaml_file)
+        table.add_row(suite, name, task.type)
+
+    console.print(table)
+
+@app.command()
+def review():
+    """Review close calls from last run."""
+    console.print("[yellow]Review functionality coming soon...[/yellow]")
+
+if __name__ == "__main__":
+    app()
+```
+
+**Step 2: Test CLI**
+
+```bash
+model-benchmark list
+model-benchmark run --suite scala-simple --models haiku --help
+```
+
+Expected: Shows task list and help
+
+**Step 3: Commit**
+
+```bash
+git add .
+git commit -m "feat: wire up CLI with run, list commands"
+```
+
+---
+
+## Task 10: Add Sample Tasks
+
+**Files:**
+- Create: `tasks/scala/simple/reverse-string.yaml`
+- Create: `tasks/scala/simple/find-max.yaml`
+- Create: `tasks/skills/simple/ask-questions.yaml`
+
+**Step 1: Create code tasks**
+
 ```yaml
 # tasks/scala/simple/reverse-string.yaml
 name: reverse-string
+type: code
 language: scala
 complexity: simple
-description: "Reverse a string"
+description: Reverse a string
 
 prompt: |
   Write a Scala function that reverses a string.
@@ -1324,8 +1306,6 @@ prompt: |
   ```scala
   def reverseString(s: String): String = ???
   ```
-
-scaffold: ""
 
 tests: |
   assert(reverseString("hello") == "olleh")
@@ -1340,19 +1320,17 @@ thresholds:
 ```yaml
 # tasks/scala/simple/find-max.yaml
 name: find-max
+type: code
 language: scala
 complexity: simple
-description: "Find maximum value in a list"
+description: Find maximum in a list
 
 prompt: |
   Write a Scala function that finds the maximum value in a non-empty list.
-  You may assume the list is never empty.
 
   ```scala
   def findMax(numbers: List[Int]): Int = ???
   ```
-
-scaffold: ""
 
 tests: |
   assert(findMax(List(1, 5, 3)) == 5)
@@ -1364,75 +1342,46 @@ thresholds:
   tests_pass: required
 ```
 
-**Step 2: Create medium tasks**
+**Step 2: Create skill task**
 
 ```yaml
-# tasks/scala/medium/flatten-nested.yaml
-name: flatten-nested
-language: scala
-complexity: medium
-description: "Flatten a nested list structure"
+# tasks/skills/simple/ask-questions.yaml
+name: ask-questions
+type: skill
+language: skill
+complexity: simple
+description: Test that responses ask clarifying questions
 
 prompt: |
-  Write a Scala function that flattens a list of lists into a single list.
+  I have a bug in my code. Can you fix it?
 
-  ```scala
-  def flatten[A](nested: List[List[A]]): List[A] = ???
-  ```
+checks:
+  - type: contains_question
+    description: "Should ask a clarifying question"
 
-scaffold: ""
+  - type: mentions_any
+    terms: ["what", "which", "where", "can you", "could you", "more information", "details"]
+    description: "Should request more information"
 
-tests: |
-  assert(flatten(List(List(1, 2), List(3, 4))) == List(1, 2, 3, 4))
-  assert(flatten(List(List.empty[Int], List(1))) == List(1))
-  assert(flatten(List.empty[List[Int]]) == List.empty[Int])
-
-thresholds:
-  compiles: required
-  tests_pass: required
+  - type: not_contains
+    terms: ["here's the fix", "try this code", "the solution is"]
+    description: "Should NOT provide a fix without context"
 ```
 
-```yaml
-# tasks/scala/medium/group-by-key.yaml
-name: group-by-key
-language: scala
-complexity: medium
-description: "Group list elements by a key function"
-
-prompt: |
-  Write a Scala function that groups elements by the result of a key function.
-  Return a Map where keys are the results of applying the key function,
-  and values are lists of elements that produced that key.
-
-  ```scala
-  def groupByKey[A, K](items: List[A])(key: A => K): Map[K, List[A]] = ???
-  ```
-
-scaffold: ""
-
-tests: |
-  val result = groupByKey(List("one", "two", "three"))(_.length)
-  assert(result(3) == List("one", "two"))
-  assert(result(5) == List("three"))
-
-thresholds:
-  compiles: required
-  tests_pass: required
-```
-
-**Step 3: Verify tasks load correctly**
+**Step 3: Verify tasks load**
 
 ```bash
-sbt "run list"
+model-benchmark list
 ```
 
-Expected: Shows all 5 tasks
+Expected: Shows all tasks
 
 **Step 4: Commit**
 
 ```bash
+mkdir -p tasks/scala/simple tasks/skills/simple
 git add .
-git commit -m "feat: add sample Scala task suite (simple and medium)"
+git commit -m "feat: add sample code and skill tasks"
 ```
 
 ---
@@ -1442,26 +1391,30 @@ git commit -m "feat: add sample Scala task suite (simple and medium)"
 **Step 1: Set API key**
 
 ```bash
-export ANTHROPIC_API_KEY="your-key-here"
+export ANTHROPIC_API_KEY="your-key"
 ```
 
-**Step 2: Run benchmark on simple suite**
+**Step 2: Run simple benchmark**
 
 ```bash
-sbt "run run --suite scala-simple --models haiku,sonnet"
+model-benchmark run --suite scala-simple --models haiku
 ```
 
-Expected: Report generated with scores for each task/model combination
+Expected: Report generated with scores
 
-**Step 3: Review output**
+**Step 3: Run skill benchmark**
 
-Check `reports/benchmark-YYYY-MM-DD.md` for the generated report.
+```bash
+model-benchmark run --suite skills-simple --models haiku,opus
+```
+
+Expected: Report with skill check results
 
 **Step 4: Commit any fixes**
 
 ```bash
 git add .
-git commit -m "fix: adjustments from end-to-end testing"
+git commit -m "fix: adjustments from e2e testing"
 ```
 
 ---
@@ -1469,13 +1422,14 @@ git commit -m "fix: adjustments from end-to-end testing"
 ## Summary
 
 **Phase 1 complete when:**
-- [ ] All 10 tasks implemented and committed
-- [ ] `sbt test` passes all unit tests
-- [ ] `sbt "run run --suite scala-simple"` produces a valid report
-- [ ] At least 5 sample Scala tasks exist
+- [ ] All 11 tasks implemented
+- [ ] `pytest` passes all tests
+- [ ] `model-benchmark run --suite scala-simple` works
+- [ ] `model-benchmark run --suite skills-simple` works
+- [ ] At least 3 code tasks and 1 skill task exist
 
 **Phase 2 (future):**
-- Add Kotlin evaluator and tasks
-- Add complex task suite
-- Implement full blind review flow with JSON persistence
-- Add scalafix and wartremover scoring
+- Add Kotlin evaluator
+- Add medium/complex task suites
+- Implement blind review flow
+- Add fuzzy checks with Haiku classifier
