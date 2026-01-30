@@ -10,6 +10,14 @@ debug/
 # Session and history data
 history.jsonl
 chrome/
+file-history/
+todos/
+
+# Project-specific settings
+projects/
+
+# Local settings
+settings.local.json
 
 # Analytics and telemetry
 statsig/
