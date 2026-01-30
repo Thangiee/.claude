@@ -34,3 +34,31 @@ Before reviewing code, understand the system. Spawn an Explore subagent:
 Use Task tool with `subagent_type: "Explore"` and `model: "haiku"` (context gathering is mechanical).
 
 Store the summary for Phase 3.
+
+### Phase 2: Change Analysis
+
+Gather the changes to review based on invocation:
+
+**No arguments (uncommitted changes):**
+```bash
+git diff HEAD
+git diff --staged
+git status
+```
+
+**PR URL argument:**
+```bash
+gh pr diff <PR-NUMBER> --repo <OWNER/REPO>
+gh pr view <PR-NUMBER> --repo <OWNER/REPO> --json title,body,files
+```
+
+**File paths argument:**
+```bash
+git diff HEAD -- <files>
+git log --oneline -5 -- <files>
+```
+
+Capture:
+- Files changed (with line counts)
+- Actual diff content
+- Related context (PR description, recent history)
