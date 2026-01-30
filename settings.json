@@ -1,14 +1,18 @@
 {
   "model": "opus",
+  "permissions": {
+    "allow": [
+      "Bash(path:/tmp:*)"
+    ]
+  },
+  "hooks": {},
   "statusLine": {
     "type": "command",
     "command": "bash ~/.claude/statusline-command.sh"
   },
   "enabledPlugins": {
     "superpowers@claude-plugins-official": true,
-    "superpowers@superpowers-marketplace": true
+    "everything-claude-code@everything-claude-code": true
   },
-  "autoUpdatesChannel": "latest",
-  "hooks": {
-  }
+  "autoUpdatesChannel": "latest"
 }
