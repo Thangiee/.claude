@@ -1,22 +1,21 @@
 {
-  "statusLine" : {
-    "command" : "bash \/Users\/thangle\/.claude\/statusline-command.sh",
-    "type" : "command"
+  "env": {
+    "ENABLE_TOOL_SEARCH": "auto:0"
   },
-  "enabledPlugins" : {
-    "superpowers@superpowers-dev" : true,
-    "everything-claude-code@everything-claude-code" : true
-  },
-  "autoUpdatesChannel" : "latest",
-  "permissions" : {
-    "allow" : [
-      "Bash(path:\/tmp:*)"
+  "permissions": {
+    "allow": [
+      "Bash(path:/tmp:*)"
     ]
   },
-  "hooks" : {
-
+  "hooks": {},
+  "statusLine": {
+    "type": "command",
+    "command": "bash /Users/thangle/.claude/statusline-command.sh"
   },
-  "env" : {
-    "ENABLE_TOOL_SEARCH" : "auto:0"
-  }
+  "enabledPlugins": {
+    "superpowers@superpowers-dev": true,
+    "everything-claude-code@everything-claude-code": true
+  },
+  "autoUpdatesChannel": "latest",
+  "model": "sonnet"
 }
