@@ -50,14 +50,17 @@ Reference files are in the same directory as this skill.
 
 For multi-service issues or deep investigations, spawn a subagent:
 
+1. Read the agent prompt: `~/.claude/agents/mint-sre-investigator.md`
+2. Spawn with Task tool:
+
 ```
 Task(
   subagent_type="general-purpose",
-  prompt="<include content from reference files relevant to the investigation>
-          Investigate: <user's question>
-          Return: triage summary with queries used",
+  prompt="<agent prompt from file above>
+
+          Investigation request: <user's question>",
   model="sonnet"
 )
 ```
 
-This keeps the main conversation context clean while allowing thorough investigation.
+This keeps the main conversation context clean while the agent does thorough investigation with full domain knowledge.
