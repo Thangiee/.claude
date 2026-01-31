@@ -12,7 +12,7 @@ GRAFANA_QUERY = os.path.join(os.path.dirname(__file__), "grafana-query")
 
 
 @mcp.tool()
-def grafana_metrics(
+def metrics(
     query: str,
     last: str = "1h",
     start: str = None,
@@ -34,7 +34,7 @@ def grafana_metrics(
 
 
 @mcp.tool()
-def grafana_logs(
+def logs(
     query: str,
     last: str = "1h",
     start: str = None,
