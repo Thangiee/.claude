@@ -7,6 +7,10 @@
         "Authorization": "Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}"
       },
       "lazyLoad": true
+    },
+    "grafana": {
+      "command": "/Users/thangle/.claude/mcp-grafana/venv/bin/python",
+      "args": ["/Users/thangle/.claude/mcp-grafana/server.py"]
     }
   }
 }
