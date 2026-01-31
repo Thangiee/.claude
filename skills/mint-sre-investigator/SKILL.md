@@ -1,66 +1,50 @@
 ---
 name: mint-sre-investigator
-description: Use when investigating alerts, incidents, or answering operational questions about MINT services. Provides expert SRE guidance using Grafana metrics/logs and Unblocked context.
+description: Use when investigating alerts, incidents, or answering operational questions about MINT services. Spawns expert SRE agent using Grafana metrics/logs and Unblocked context.
 ---
 
 # MINT SRE Investigator
 
-## Overview
+## How It Works
 
-Expert SRE skill for MINT service investigations. Uses metrics-first approach.
+This skill spawns a specialized SRE agent that investigates in its own context, returning only a triage summary to your main conversation.
 
-**Tools:** `mcp__grafana__metrics`, `mcp__grafana__logs`, `mcp__unblocked__*`
+## Usage
 
-## Services
+For ANY MINT investigation:
 
-`menu-integration`, `olo-integration`, `toast-integration-service`, `chipotle-integration`, `seven-eleven-integration`, `stream-integration`
-
-## Workflow
-
-```
-1. METRICS (fast)  → Aggregated health check
-2. LOGS (if needed) → Specific errors (always limit 50)
-3. UNBLOCKED       → Jira/Confluence/Slack context
-```
-
-## Output Format
-
-**Always start with triage headline:**
-```
-🔴 CRITICAL: {metric} at {value} (normal: {baseline})
-🟡 ELEVATED: {metric} showing {pattern}
-🟢 HEALTHY: {service} metrics nominal
-```
-
-Include queries used. Expand to full report only if asked.
-
-## Investigation Routing
-
-Based on the investigation type, read the appropriate reference file:
-
-| Investigation Type | Read This File |
-|-------------------|----------------|
-| Any investigation | `metrics-catalog.md` (skim for relevant metrics) |
-| Need query help | `query-optimization.md` |
-| Specific scenario | `playbooks.md` (find matching playbook) |
-
-Reference files are in the same directory as this skill.
-
-## For Complex Investigations
-
-For multi-service issues or deep investigations, spawn a subagent:
-
-1. Read the agent prompt: `~/.claude/agents/mint-sre-investigator.md`
-2. Spawn with Task tool:
+1. Read the agent prompt from `~/.claude/agents/mint-sre-investigator.md`
+2. Spawn the agent:
 
 ```
 Task(
   subagent_type="general-purpose",
-  prompt="<agent prompt from file above>
+  prompt="<full content of agent file>
 
-          Investigation request: <user's question>",
+          ---
+          INVESTIGATION REQUEST:
+          <user's question or alert details>",
   model="sonnet"
 )
 ```
 
-This keeps the main conversation context clean while the agent does thorough investigation with full domain knowledge.
+3. Return the agent's triage summary to the user
+
+## Examples
+
+**User:** "Toast orders alert - no successful orders in 15 min"
+**Action:** Spawn agent with investigation request, return triage summary
+
+**User:** "Is OLO healthy?"
+**Action:** Spawn agent, return health check summary
+
+**User:** "Why did Chipotle fail yesterday at 3pm?"
+**Action:** Spawn agent with time context, return incident summary
+
+## Follow-ups
+
+If user asks follow-up questions, spawn the agent again with:
+- The new question
+- Relevant context from previous findings
+
+Each investigation is self-contained. Main conversation stays clean.
