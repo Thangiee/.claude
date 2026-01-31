@@ -2,7 +2,7 @@
 set -e
 
 # grafana-query - Query Grafana metrics and logs
-# Usage: grafana-query <metrics|logs> '<query>' [--last 1h | --start X --end Y]
+# Usage: grafana-query <metrics|logs> '<query>' [--last 1h | --start X --end Y] [--instant] [--step 1h]
 
 SECRETS_FILE="$HOME/.claude/.secrets"
 HOST="favor.grafana.net"
@@ -39,6 +39,22 @@ esac
 NOW_MS=$(($(date +%s) * 1000))
 FROM_MS=$((NOW_MS - 3600000))
 TO_MS=$NOW_MS
+INSTANT=false
+STEP_MS=60000  # Default 1 minute
+
+# Parse duration to milliseconds
+parse_duration_ms() {
+    local DURATION="$1"
+    local NUM="${DURATION%[hdmw]}"
+    local UNIT="${DURATION: -1}"
+    case "$UNIT" in
+        m) echo $((NUM * 60 * 1000)) ;;
+        h) echo $((NUM * 3600 * 1000)) ;;
+        d) echo $((NUM * 86400 * 1000)) ;;
+        w) echo $((NUM * 604800 * 1000)) ;;
+        *) error "Invalid duration unit: $UNIT. Use m, h, d, or w" ;;
+    esac
+}
 
 # Parse time options
 while [[ $# -gt 0 ]]; do
@@ -46,17 +62,8 @@ while [[ $# -gt 0 ]]; do
         --last)
             shift
             DURATION="$1"
-            # Parse duration like 1h, 30m, 7d, 1w
-            NUM="${DURATION%[hdmw]}"
-            UNIT="${DURATION: -1}"
-            case "$UNIT" in
-                m) SECONDS=$((NUM * 60)) ;;
-                h) SECONDS=$((NUM * 3600)) ;;
-                d) SECONDS=$((NUM * 86400)) ;;
-                w) SECONDS=$((NUM * 604800)) ;;
-                *) error "Invalid duration unit: $UNIT. Use m, h, d, or w" ;;
-            esac
-            FROM_MS=$((NOW_MS - SECONDS * 1000))
+            DURATION_MS=$(parse_duration_ms "$DURATION")
+            FROM_MS=$((NOW_MS - DURATION_MS))
             shift
             ;;
         --start)
@@ -69,6 +76,15 @@ while [[ $# -gt 0 ]]; do
             TO_MS=$(($(date -j -f "%Y-%m-%d %H:%M:%S" "$1" +%s 2>/dev/null || date -d "$1" +%s) * 1000))
             shift
             ;;
+        --instant)
+            INSTANT=true
+            shift
+            ;;
+        --step)
+            shift
+            STEP_MS=$(parse_duration_ms "$1")
+            shift
+            ;;
         *)
             error "Unknown option: $1"
             ;;
@@ -76,21 +92,41 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Build request payload
-PAYLOAD=$(cat <<EOF
+if [[ "$INSTANT" == "true" ]]; then
+    # Instant query: single value at end of time range
+    PAYLOAD=$(cat <<EOF
 {
   "queries": [{
     "refId": "A",
     "datasource": {"type": "$DS_TYPE", "uid": "$DS_UID"},
     "expr": $(echo "$QUERY" | jq -Rs .),
-    "range": true,
-    "intervalMs": 60000,
-    "maxDataPoints": 1000
+    "instant": true,
+    "range": false
   }],
   "from": "$FROM_MS",
   "to": "$TO_MS"
 }
 EOF
 )
+else
+    # Range query with configurable step
+    MAX_POINTS=$(( (TO_MS - FROM_MS) / STEP_MS + 1 ))
+    PAYLOAD=$(cat <<EOF
+{
+  "queries": [{
+    "refId": "A",
+    "datasource": {"type": "$DS_TYPE", "uid": "$DS_UID"},
+    "expr": $(echo "$QUERY" | jq -Rs .),
+    "range": true,
+    "intervalMs": $STEP_MS,
+    "maxDataPoints": $MAX_POINTS
+  }],
+  "from": "$FROM_MS",
+  "to": "$TO_MS"
+}
+EOF
+)
+fi
 
 # Make API request
 curl -s -X POST "https://$HOST/api/ds/query" \

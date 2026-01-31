@@ -16,6 +16,5 @@
     "superpowers@superpowers-dev": true,
     "everything-claude-code@everything-claude-code": true
   },
-  "autoUpdatesChannel": "latest",
-  "model": "sonnet"
+  "autoUpdatesChannel": "latest"
 }

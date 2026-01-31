@@ -1,10 +1,12 @@
 # Investigation Playbooks
 
+**Note:** All queries default to `deployment_environment="production"`. Add to all metric selectors.
+
 ## Order Failures Spike
 
 ```
 1. Identify scope
-   sum by (app) (increase({__name__=~".*_favor_submitted_total", success="false"}[1h]))
+   sum by (app) (increase({__name__=~".*_favor_submitted_total", deployment_environment="production", success="false"}[1h]))
 
 2. Validation or submission?
    - High favor_validated{success=false} → menu/item issue
