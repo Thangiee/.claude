@@ -1,5 +1,7 @@
 # Credentials and sensitive data
 .credentials.json
+.secrets
+fetch-claude-usage
 
 # Temporary and cache files
 cache/
