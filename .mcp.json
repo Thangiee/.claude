@@ -9,8 +9,8 @@
       "lazyLoad": true
     },
     "grafana": {
-      "command": "/Users/thangle/.claude/mcp-grafana/venv/bin/python",
-      "args": ["/Users/thangle/.claude/mcp-grafana/server.py"]
+      "command": "/Users/thangle/.claude/mcp-servers/grafana/venv/bin/python",
+      "args": ["/Users/thangle/.claude/mcp-servers/grafana/server.py"]
     }
   }
 }

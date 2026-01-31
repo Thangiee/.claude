@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """MCP server for querying Grafana metrics and logs."""
 
+import os
 import subprocess
 import json
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("grafana")
 
-GRAFANA_QUERY = "/Users/thangle/.claude/grafana-query"
+GRAFANA_QUERY = os.path.join(os.path.dirname(__file__), "grafana-query")
 
 
 @mcp.tool()
