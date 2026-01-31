@@ -42,10 +42,35 @@ mcp__grafana__metrics(query="sum(increase(metric[1h]))", last="24h", step="1h")
 
 ## LogQL Rules
 
+### Metric queries over logs (instant works!)
+```python
+# Count errors first - instant returns single value
+mcp__grafana__logs(
+  query='sum(count_over_time({app="x", deployment_environment="production"} |= "error" [1h]))',
+  last="1h", instant=True
+)
+```
+
+### Log line queries (use small limits)
+| Purpose | Limit | Est. Tokens |
+|---------|-------|-------------|
+| Quick sample | 10 | ~1-2k |
+| Pattern analysis | 20 | ~2-4k |
+| Deep investigation | 50 | ~5-10k |
+
+### Reduce log line size
+```logql
+# Full JSON = huge tokens
+{app="x"} |= "error" | limit 20
+
+# Extract fields = smaller
+{app="x"} |= "error" | json | line_format "{{.level}} {{.msg}}" | limit 20
+```
+
 | Avoid | Use Instead | Why |
 |-------|-------------|-----|
-| `{app="x"} \|= "error"` | `sum(count_over_time({app="x"} \|= "error" [1h]))` | Count first |
-| No limit | `\| limit 50` always | Cap log lines |
+| Fetch logs directly | Count first with `instant=True` | Know scope before fetching |
+| `\| limit 50` | `\| limit 10-20` | Smaller default |
 | Broad time range | Narrow to anomaly window | Less data |
 
 ## Investigation Flow
@@ -57,9 +82,11 @@ Step 2: Break down by key dimension (instant=True, topk 10)
         ↓ Identify culprit?
 Step 3: Time series if needed (step=appropriate for range)
         ↓ Need specific logs?
-Step 4: Narrow time window, sample logs (limit 50)
+Step 4: Count logs first (instant=True on count_over_time)
+        ↓ How many? Worth fetching?
+Step 5: Sample logs (limit 10-20, use line_format if verbose)
         ↓ Need more context?
-Step 5: Pull Unblocked context
+Step 6: Pull Unblocked context
 ```
 
 ## Time Ranges

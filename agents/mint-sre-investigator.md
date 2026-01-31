@@ -71,9 +71,42 @@ mcp__grafana__metrics(query="rate(errors[1m])", last="1h", step="5m")
 - Use `topk(10, ...)` to cap cardinality
 - Use `sum()` to aggregate across instances
 
-**LogQL:**
-- Count first: `sum(count_over_time({app="x"} |= "error" [1h]))`
-- Always: `| limit 50`
+**LogQL Optimization:**
+
+1. **Count before fetching** - Use instant metric query first:
+```python
+# How many errors? (instant=True, ~150 tokens)
+mcp__grafana__logs(
+  query='sum(count_over_time({app="chipotle-integration", deployment_environment="production"} |= "error" [1h]))',
+  last="1h", instant=True
+)
+```
+
+2. **Then fetch samples with small limit:**
+```python
+# Get 10 sample errors (~2-5k tokens depending on log size)
+mcp__grafana__logs(
+  query='{app="chipotle-integration", deployment_environment="production"} |= "error" | limit 10',
+  last="1h"
+)
+```
+
+3. **Extract specific fields to reduce log line size:**
+```logql
+{app="x"} | json | line_format "{{.level}} {{.msg}} {{.error}}" | limit 20
+```
+
+4. **Use targeted filters** - more specific = fewer results:
+```logql
+{app="x"} |= "submit" |= "failed" |~ "MINT-\\d+" | limit 20
+```
+
+**Default limits by purpose:**
+| Purpose | Limit |
+|---------|-------|
+| Quick sample | 10 |
+| Pattern analysis | 20 |
+| Deep investigation | 50 (max) |
 
 ## Order Metrics (Most Critical)
 
