@@ -1,0 +1,99 @@
+#!/bin/bash
+set -e
+
+# grafana-query - Query Grafana metrics and logs
+# Usage: grafana-query <metrics|logs> '<query>' [--last 1h | --start X --end Y]
+
+SECRETS_FILE="$HOME/.claude/.secrets"
+HOST="favor.grafana.net"
+METRICS_DS="grafanacloud-prom"
+LOGS_DS="grafanacloud-logs"
+
+# Error helper - outputs JSON error and exits
+error() {
+    echo "{\"error\": \"$1\"}"
+    exit 1
+}
+
+# Load token
+if [[ -f "$SECRETS_FILE" ]]; then
+    source "$SECRETS_FILE"
+fi
+[[ -z "$GRAFANA_TOKEN" ]] && error "GRAFANA_TOKEN not set in $SECRETS_FILE"
+
+# Parse arguments
+[[ $# -lt 2 ]] && error "Usage: grafana-query <metrics|logs> '<query>' [--last 1h | --start X --end Y]"
+
+SUBCOMMAND="$1"
+QUERY="$2"
+shift 2
+
+# Validate subcommand
+case "$SUBCOMMAND" in
+    metrics) DS_TYPE="prometheus"; DS_UID="$METRICS_DS" ;;
+    logs)    DS_TYPE="loki";       DS_UID="$LOGS_DS" ;;
+    *)       error "Unknown subcommand: $SUBCOMMAND. Use 'metrics' or 'logs'" ;;
+esac
+
+# Default time range: last 1 hour
+NOW_MS=$(($(date +%s) * 1000))
+FROM_MS=$((NOW_MS - 3600000))
+TO_MS=$NOW_MS
+
+# Parse time options
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --last)
+            shift
+            DURATION="$1"
+            # Parse duration like 1h, 30m, 7d, 1w
+            NUM="${DURATION%[hdmw]}"
+            UNIT="${DURATION: -1}"
+            case "$UNIT" in
+                m) SECONDS=$((NUM * 60)) ;;
+                h) SECONDS=$((NUM * 3600)) ;;
+                d) SECONDS=$((NUM * 86400)) ;;
+                w) SECONDS=$((NUM * 604800)) ;;
+                *) error "Invalid duration unit: $UNIT. Use m, h, d, or w" ;;
+            esac
+            FROM_MS=$((NOW_MS - SECONDS * 1000))
+            shift
+            ;;
+        --start)
+            shift
+            FROM_MS=$(($(date -j -f "%Y-%m-%d %H:%M:%S" "$1" +%s 2>/dev/null || date -d "$1" +%s) * 1000))
+            shift
+            ;;
+        --end)
+            shift
+            TO_MS=$(($(date -j -f "%Y-%m-%d %H:%M:%S" "$1" +%s 2>/dev/null || date -d "$1" +%s) * 1000))
+            shift
+            ;;
+        *)
+            error "Unknown option: $1"
+            ;;
+    esac
+done
+
+# Build request payload
+PAYLOAD=$(cat <<EOF
+{
+  "queries": [{
+    "refId": "A",
+    "datasource": {"type": "$DS_TYPE", "uid": "$DS_UID"},
+    "expr": $(echo "$QUERY" | jq -Rs .),
+    "range": true,
+    "intervalMs": 60000,
+    "maxDataPoints": 1000
+  }],
+  "from": "$FROM_MS",
+  "to": "$TO_MS"
+}
+EOF
+)
+
+# Make API request
+curl -s -X POST "https://$HOST/api/ds/query" \
+    -H "Authorization: Bearer $GRAFANA_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "$PAYLOAD"
